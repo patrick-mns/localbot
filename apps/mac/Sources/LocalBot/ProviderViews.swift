@@ -70,6 +70,25 @@ struct ModelPicker: View {
                             // Accept a typed id even if the provider doesn't list it.
                             if !query.isEmpty { model = query; showing = false }
                         }
+                    // Any model id works, listed or not (new models, private deployments).
+                    let typed = query.trimmingCharacters(in: .whitespaces)
+                    if !typed.isEmpty && !all.contains(where: { $0.id == typed }) {
+                        Button {
+                            model = typed
+                            showing = false
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "plus.circle").font(.system(size: 12))
+                                Text("Use “\(typed)”").font(.system(size: 12, weight: .medium)).lineLimit(1)
+                                Spacer()
+                                Text("Return").font(.system(size: 10)).foregroundStyle(Theme.tertiary)
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 7)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Theme.surface))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
                     if all.isEmpty {
                         Text("This provider has no model list. Type the id and press Return.")
                             .font(.system(size: 11)).foregroundStyle(Theme.tertiary).padding(.vertical, 6)

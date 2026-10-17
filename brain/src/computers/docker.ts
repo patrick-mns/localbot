@@ -1,12 +1,12 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statfsSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { DockerCuaHands } from "../hands/docker-cua.ts";
-import type { Computer, ComputerProvider } from "./types.ts";
+import type { Computer, ComputerProvider, SetupProgress } from "./types.ts";
 
 const run = promisify(execFile);
 
@@ -51,12 +51,71 @@ export class DockerProvider implements ComputerProvider {
     }));
   }
 
+  /**
+   * What a Linux device needs on this Mac: Docker installed and running, the
+   * image (downloaded once, ~1–2 GB) and some free disk.
+   */
+  async requirements() {
+    let docker: "running" | "stopped" | "missing" = "missing";
+    if (await this.available()) docker = "running";
+    else if (existsSync("/Applications/Docker.app") || (await run("sh", ["-c", "command -v docker"]).then(() => true, () => false))) docker = "stopped";
+    const imageReady = docker === "running" && (await run("docker", ["image", "inspect", IMAGE]).then(() => true, () => false));
+    let freeGB: number | null = null;
+    try {
+      const fs = statfsSync(homedir());
+      freeGB = Math.round(((fs.bavail * fs.bsize) / 1e9) * 10) / 10;
+    } catch {}
+    return { docker, imageReady, freeGB, needGB: 5 };
+  }
+
+  /** Downloads the image, reporting the share of layers done. */
+  private pull(progress?: SetupProgress) {
+    return new Promise<void>((resolve, reject) => {
+      const child = spawn("docker", ["pull", IMAGE]);
+      // Each layer's share: waiting 0, downloading 0.2, downloaded 0.8, unpacked 1.
+      const layers = new Map<string, number>();
+      const onLine = (line: string) => {
+        const m = /^([0-9a-f]{12}): (.+)$/.exec(line.trim());
+        if (!m) return;
+        const [, id, state] = m;
+        const share = /Pull complete|Already exists/.test(state) ? 1 : /Download complete|Extracting/.test(state) ? 0.8
+          : /Downloading|Verifying/.test(state) ? 0.2 : 0;
+        layers.set(id, Math.max(layers.get(id) ?? 0, share));
+        const total = [...layers.values()].reduce((a, b) => a + b, 0);
+        progress?.("download", "active", { fraction: total / layers.size });
+      };
+      let rest = "";
+      child.stdout.on("data", (chunk) => {
+        const lines = (rest + chunk.toString()).split("\n");
+        rest = lines.pop() ?? "";
+        lines.forEach(onLine);
+      });
+      let err = "";
+      child.stderr.on("data", (c) => (err += c.toString()));
+      child.on("error", reject);
+      child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(err.trim().split("\n").pop() || `docker pull failed (${code})`))));
+    });
+  }
+
   /** Creates and starts a new desktop; returns its id. */
-  async create(label: string): Promise<string> {
+  async create(label: string, _options?: Record<string, string>, progress?: SetupProgress): Promise<string> {
+    const step = async <T>(name: Parameters<SetupProgress>[0], work: () => Promise<T>): Promise<T> => {
+      progress?.(name, "active");
+      try {
+        const out = await work();
+        progress?.(name, "done");
+        return out;
+      } catch (err) {
+        progress?.(name, "failed", { error: err instanceof Error ? err.message : String(err) });
+        throw err;
+      }
+    };
     const name = `localbot-${slug(label)}-${randomBytes(2).toString("hex")}`;
     const used = new Set((await this.containers()).map((c) => c.port));
     const port = await freePort(6902, used);
-    await run("docker", [
+    if (await run("docker", ["image", "inspect", IMAGE]).then(() => true, () => false)) progress?.("download", "skipped");
+    else await step("download", () => this.pull(progress));
+    await step("start", () => run("docker", [
       "run", "-d", "--name", name,
       // Bound to localhost only: the desktop is never exposed to the network.
       "-p", `127.0.0.1:${port}:6901`,
@@ -65,9 +124,15 @@ export class DockerProvider implements ComputerProvider {
       "--label", `${LABEL}=1`,
       "--label", `localbot.name=${label}`,
       IMAGE,
-    ], { timeout: 10 * 60_000 });
-    // Finish setup in the background so the device shows up right away.
-    void this.upgradeDriver(name).then(() => this.startHands(name));
+    ], { timeout: 10 * 60_000 }));
+    // Finish setup in the background so the device shows up right away; the
+    // progress list follows it to the end.
+    void (async () => {
+      try {
+        await step("controls", () => this.upgradeDriver(name));
+        await step("screen", () => this.startHands(name));
+      } catch {}
+    })();
     return `docker:${name}`;
   }
 

@@ -225,15 +225,26 @@ struct ConnectAIStep: View {
 struct DeviceStep: View {
     @ObservedObject var brain: Brain
     let onNext: () -> Void
-    @State private var kinds: [Brain.DeviceKind] = []
-    @State private var creating = false
-    @State private var checking = false
+    @State private var req: Brain.Requirements?
+    @State private var setupId: String?
+    @State private var failedToStart: String?
+    @State private var openingDocker = false
 
-    private var docker: Brain.DeviceKind? { kinds.first { $0.id == "docker" } }
+    private var steps: [String: Brain.SetupStep] { setupId.flatMap { brain.setups[$0] } ?? [:] }
+    private var failed: String? { failedToStart ?? steps.values.first { $0.status == "failed" }?.error }
+    private var finished: Bool { steps["screen"]?.status == "done" }
+    private var lowDisk: Bool { (req?.freeGB ?? .infinity) < (req?.needGB ?? 0) && req?.imageReady != true }
 
     var body: some View {
         StepLayout(title: "Give bots a computer", subtitle: "A device is where a bot works: it sees the screen, clicks, types and runs commands.") {
-            if !brain.computers.isEmpty {
+            if setupId != nil {
+                SetupList(steps: steps, imageReady: req?.imageReady == true)
+                if let failed {
+                    Label(failed, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12)).foregroundStyle(Theme.warn)
+                        .fixedSize(horizontal: false, vertical: true).padding(.top, 10)
+                }
+            } else if !brain.computers.isEmpty {
                 VStack(spacing: 6) {
                     ForEach(brain.computers) { c in
                         HStack(spacing: 10) {
@@ -247,51 +258,136 @@ struct DeviceStep: View {
                         .background(RoundedRectangle(cornerRadius: 10).fill(Theme.surface)).hairline(10)
                     }
                 }
-            } else if docker?.available == true {
-                Label("A Linux desktop (Debian + Firefox) runs in Docker and starts in seconds.", systemImage: "terminal")
-                    .font(.system(size: 13)).foregroundStyle(Theme.secondary)
-            } else if !kinds.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    Label("Docker Desktop isn’t running", systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.warn)
-                    Text("Linux devices run in Docker. Install or open Docker Desktop, then check again.")
-                        .font(.system(size: 12)).foregroundStyle(Theme.secondary)
-                    HStack(spacing: 10) {
-                        Link(destination: URL(string: "https://www.docker.com/products/docker-desktop/")!) {
-                            Label("Get Docker Desktop", systemImage: "arrow.up.right").font(.system(size: 12))
-                        }
-                        PillButton(title: checking ? "Checking…" : "Check again", systemImage: "arrow.clockwise") { refresh() }
-                    }
-                }
+            } else if let req {
+                requirements(req)
             } else {
-                ProgressView().controlSize(.small)
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking your Mac…").font(.system(size: 12)).foregroundStyle(Theme.secondary)
+                }
             }
         } footer: {
-            if brain.computers.isEmpty {
+            if setupId != nil {
+                if failed != nil {
+                    PillButton(title: "Try again", systemImage: "arrow.clockwise", prominent: true) { create() }
+                } else {
+                    PillButton(title: finished ? "Continue" : "Setting up…", systemImage: "arrow.right", prominent: true, action: onNext)
+                        .disabled(!finished)
+                }
+            } else if brain.computers.isEmpty {
                 Button("Later") { onNext() }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.tertiary)
                     .padding(.trailing, 8)
-                PillButton(title: creating ? "Creating…" : "Create Linux device", systemImage: "plus", prominent: true) { create() }
-                    .disabled(docker?.available != true || creating)
+                PillButton(title: "Create Linux device", systemImage: "plus", prominent: true) { create() }
+                    .disabled(req?.docker != "running")
             } else {
                 PillButton(title: "Continue", systemImage: "arrow.right", prominent: true, action: onNext)
             }
         }
-        .task { refresh() }
+        // Keep checking while something is missing: Docker starting, installed…
+        .task {
+            while !Task.isCancelled {
+                req = await brain.requirements()
+                if req?.docker == "running" { openingDocker = false }
+                if req?.docker == "running" && setupId == nil && !brain.computers.isEmpty { break }
+                try? await Task.sleep(for: .seconds(req?.docker == "running" ? 10 : 2))
+            }
+        }
     }
 
-    private func refresh() {
-        checking = true
-        Task {
-            kinds = await brain.deviceKinds()
-            checking = false
+    @ViewBuilder private func requirements(_ req: Brain.Requirements) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            switch req.docker {
+            case "missing":
+                Label("Docker Desktop is needed", systemImage: "shippingbox")
+                    .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.warn)
+                Text("Linux devices run in Docker, a free app. Install it, open it once, and come back: this page notices on its own.")
+                    .font(.system(size: 12)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
+                Link(destination: URL(string: "https://www.docker.com/products/docker-desktop/")!) {
+                    Label("Get Docker Desktop", systemImage: "arrow.up.right").font(.system(size: 12, weight: .medium))
+                }
+            case "stopped":
+                Label(openingDocker ? "Starting Docker…" : "Docker Desktop isn’t running", systemImage: "shippingbox")
+                    .font(.system(size: 13, weight: .medium)).foregroundStyle(openingDocker ? Theme.secondary : Theme.warn)
+                Text(openingDocker ? "It takes a few seconds the first time." : "It’s installed. Open it and Local Bot continues as soon as it’s up.")
+                    .font(.system(size: 12)).foregroundStyle(Theme.secondary)
+                if !openingDocker {
+                    PillButton(title: "Open Docker", systemImage: "play.fill", prominent: true) {
+                        openingDocker = true
+                        NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: "/Applications/Docker.app"),
+                                                           configuration: NSWorkspace.OpenConfiguration())
+                    }
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+            default:
+                Label("Docker is running", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.live)
+                Text(req.imageReady
+                     ? "A Linux desktop (Debian + Firefox) starts in seconds."
+                     : "The first device downloads the Linux desktop (about 1–2 GB). It takes a few minutes, once.")
+                    .font(.system(size: 12)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
+                if lowDisk, let free = req.freeGB {
+                    Label("Only \(String(format: "%.1f", free)) GB free. Free up some space first (about \(Int(req.needGB)) GB).",
+                          systemImage: "externaldrive.badge.exclamationmark")
+                        .font(.system(size: 12)).foregroundStyle(Theme.warn)
+                }
+            }
         }
     }
 
     private func create() {
-        creating = true
+        let id = UUID().uuidString
+        failedToStart = nil
+        setupId = id
         Task {
-            _ = await brain.createDevice(kind: "docker", name: "Linux")
-            creating = false
+            if await brain.createDevice(kind: "docker", name: "Linux", setupId: id) == nil {
+                failedToStart = brain.lastError ?? "Couldn’t create the device"
+            }
+        }
+    }
+}
+
+/// The steps of a device being set up, each with its state.
+private struct SetupList: View {
+    let steps: [String: Brain.SetupStep]
+    let imageReady: Bool
+
+    private let order: [(id: String, title: String)] = [
+        ("download", "Download the Linux desktop"),
+        ("start", "Start the desktop"),
+        ("controls", "Install the bot’s controls"),
+        ("screen", "Get the screen ready"),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(order, id: \.id) { item in
+                let step = steps[item.id]
+                HStack(spacing: 10) {
+                    icon(step).frame(width: 18)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(step?.status == "skipped" ? "\(item.title) · already on this Mac" : item.title)
+                            .font(.system(size: 13, weight: step?.status == "active" ? .medium : .regular))
+                            .foregroundStyle(step == nil ? Theme.tertiary : Theme.text)
+                        if item.id == "download", step?.status == "active" {
+                            ProgressView(value: step?.fraction ?? 0).progressViewStyle(.linear).frame(width: 260)
+                            Text("About 1–2 GB, only the first time.").font(.system(size: 11)).foregroundStyle(Theme.tertiary)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Theme.surface)).hairline(12)
+    }
+
+    @ViewBuilder private func icon(_ step: Brain.SetupStep?) -> some View {
+        switch step?.status {
+        case "active": ProgressView().controlSize(.small)
+        case "done", "skipped": Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.live)
+        case "failed": Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.danger)
+        default: Image(systemName: "circle").foregroundStyle(Theme.tertiary)
         }
     }
 }
@@ -306,6 +402,15 @@ struct FirstBotStep: View {
     @State private var avatar = ""
     @State private var face: Brain.Face?
     @State private var creating = false
+    /// Starts as the provider's suggestion; any model id can be typed.
+    @State private var chosenModel = ""
+
+    /// The provider connected in the first step.
+    private var providerID: String {
+        let status = brain.providerStatus
+        if let d = status?.defaultProvider, status?.entry(d)?.configured == true { return d }
+        return status?.providers.first { $0.configured }?.id ?? status?.defaultProvider ?? ""
+    }
 
     var body: some View {
         StepLayout(title: brain.bots.isEmpty ? "Create your first bot" : "You’re all set",
@@ -321,6 +426,9 @@ struct FirstBotStep: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Field(label: "Name", text: $name, placeholder: "e.g. Assistant")
                         Field(label: "Role", text: $role, placeholder: "What it’s for")
+                        if !providerID.isEmpty {
+                            ModelPicker(brain: brain, provider: providerID, model: $chosenModel)
+                        }
                         if let device = brain.computers.first {
                             Label("Works on \(device.name)", systemImage: "desktopcomputer")
                                 .font(.system(size: 12)).foregroundStyle(Theme.secondary)
@@ -336,7 +444,10 @@ struct FirstBotStep: View {
                 PillButton(title: "Done", systemImage: "checkmark", prominent: true, action: onDone)
             }
         }
-        .task { if avatar.isEmpty { roll() } }
+        .task {
+            if avatar.isEmpty { roll() }
+            if chosenModel.isEmpty { chosenModel = brain.providerStatus?.defaultModel ?? "" }
+        }
     }
 
     private func roll() {
@@ -353,8 +464,8 @@ struct FirstBotStep: View {
             var draft = Brain.BotDraft()
             draft.name = name
             draft.role = role
-            draft.provider = brain.providerStatus?.defaultProvider ?? ""
-            draft.model = brain.providerStatus?.defaultModel ?? ""
+            draft.provider = providerID
+            draft.model = chosenModel.isEmpty ? (brain.providerStatus?.defaultModel ?? "") : chosenModel
             draft.computerId = brain.computers.first?.id
             draft.avatarSeed = avatar
             if let bot = await brain.createBot(draft) { model.selection = .bot(bot.id) }
