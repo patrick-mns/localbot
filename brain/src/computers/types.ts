@@ -41,10 +41,15 @@ export interface ComputerProvider {
    * Creates a new device and returns its id (may keep provisioning in the
    * background). `options` carries the kind's extra fields (see computers.kinds).
    */
-  create?(name: string, options?: Record<string, string>): Promise<string>;
+  /** Creates a device; `progress` follows the setup steps (see SetupProgress). */
+  create?(name: string, options?: Record<string, string>, progress?: SetupProgress): Promise<string>;
   remove?(id: string): Promise<void>;
   /** A share code another Local Bot can paste to connect to this device (see share.ts). */
   share?(id: string): Promise<string>;
   /** Hands for a running computer, or null when it can't be driven right now. */
   hands?(id: string, session: string): Promise<Hands | null>;
 }
+
+/** Setup steps of a new device, for the app's progress list. */
+export type SetupStep = "download" | "start" | "controls" | "screen";
+export type SetupProgress = (step: SetupStep, status: "active" | "done" | "skipped" | "failed", detail?: { fraction?: number; error?: string }) => void;

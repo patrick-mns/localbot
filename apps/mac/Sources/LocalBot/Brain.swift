@@ -481,9 +481,33 @@ final class Brain: ObservableObject {
     }
 
     /// Returns the new device id, or nil (error in `lastError`).
-    func createDevice(kind: String, name: String, options: [String: String] = [:]) async -> String? {
+    /// What a Linux device needs on this Mac. Mirrors DockerProvider.requirements.
+    struct Requirements: Decodable, Equatable {
+        let docker: String        // running | stopped | missing
+        let imageReady: Bool
+        let freeGB: Double?
+        let needGB: Double
+    }
+
+    func requirements() async -> Requirements? {
+        try? await request("computers.requirements")
+    }
+
+    /// One step of a device being set up (download, start, controls, screen).
+    struct SetupStep: Equatable {
+        var status: String        // active | done | skipped | failed
+        var fraction: Double?
+        var error: String?
+    }
+
+    /// Setup progress by setupId, from the brain's device.setup events.
+    @Published private(set) var setups: [String: [String: SetupStep]] = [:]
+
+    func createDevice(kind: String, name: String, options: [String: String] = [:], setupId: String? = nil) async -> String? {
         do {
-            let raw = try await call("computers.create", ["kind": kind, "name": name, "options": options])
+            var params: [String: Any] = ["kind": kind, "name": name, "options": options]
+            if let setupId { params["setupId"] = setupId; setups[setupId] = [:] }
+            let raw = try await call("computers.create", params)
             await refreshComputers()
             return (raw as? [String: Any])?["id"] as? String
         } catch {
@@ -1077,6 +1101,12 @@ final class Brain: ObservableObject {
             Task { await refreshCloud() }
         case "mcp":
             Task { await refreshMcp() }
+        case "device.setup":
+            guard let d = data as? [String: Any], let id = d["setupId"] as? String,
+                  let step = d["step"] as? String, let status = d["status"] as? String else { return }
+            var steps = setups[id] ?? [:]
+            steps[step] = SetupStep(status: status, fraction: d["fraction"] as? Double, error: d["error"] as? String)
+            setups[id] = steps
         case "routine.finished":
             Notifier.shared.routineFinished(data)
         default:

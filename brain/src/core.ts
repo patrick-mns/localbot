@@ -66,6 +66,18 @@ const named = <T extends { id: string; name: string }>(c: T): T => ({ ...c, name
  * user's full name). Best effort: needs the device running and passwordless
  * sudo, which Local Bot's Linux devices have. Restarts the panel only on change.
  */
+/**
+ * Restarts the XFCE panel so it shows the new name. It has to talk to the
+ * desktop session's D-Bus, so the address is taken from the running panel;
+ * without one it doesn't try (xfce4-panel would pop up "Failed to restart").
+ */
+const RESTART_PANEL = [
+  "P=$(pgrep -u \"$(id -u)\" -x xfce4-panel | head -1)",
+  'B=$([ -n "$P" ] && tr "\\0" "\\n" < /proc/$P/environ | sed -n "s/^DBUS_SESSION_BUS_ADDRESS=//p")',
+  '[ -n "$B" ] && (DISPLAY=${DISPLAY:-:1} DBUS_SESSION_BUS_ADDRESS="$B" setsid xfce4-panel -r >/dev/null 2>&1 &)',
+  "true",
+].join("; ");
+
 async function labelDevice(id: string) {
   try {
     const p = computerProvider(id);
@@ -77,7 +89,7 @@ async function labelDevice(id: string) {
     const q = `'${name.replace(/'/g, `'\\''`)}'`;
     await hands.shell(
       `[ "$(getent passwd "$(id -un)" | cut -d: -f5)" = ${q} ] || ` +
-      `{ sudo -n usermod -c ${q} "$(id -un)" && (DISPLAY=\${DISPLAY:-:1} setsid xfce4-panel -r >/dev/null 2>&1 &); }`,
+      `{ sudo -n usermod -c ${q} "$(id -un)" && ${RESTART_PANEL}; }`,
       20_000,
     );
   } catch (err) {
@@ -229,11 +241,17 @@ export const methods: Record<string, Handler> = {
       { id: "android-emulator", label: "Android Emulator", detail: "Drive Android apps.", available: false, reason: "Coming soon" },
     ];
   },
-  "computers.create": async ({ kind, name, options }) => {
+  /** What a Linux device needs on this Mac (Docker, the image, disk). */
+  "computers.requirements": () => docker.requirements(),
+  "computers.create": async ({ kind, name, options, setupId }) => {
     const p = computerProviders.find((x) => x.name === kind);
     if (!p?.create) throw new Error(`Can’t create ${kind} devices yet`);
     if (!String(name ?? "").trim()) throw new Error("The device needs a name");
-    const id = await p.create(String(name).trim(), options ?? {});
+    // The app follows the steps (download, start, controls, screen) by setupId.
+    const progress = setupId
+      ? (step: string, status: string, detail?: object) => emit("device.setup", { setupId, step, status, ...detail })
+      : undefined;
+    const id = await p.create(String(name).trim(), options ?? {}, progress);
     emit("computers", null);
     return { id };
   },
