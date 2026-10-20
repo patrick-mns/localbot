@@ -1,5 +1,5 @@
 {
-  "client_id": "https://cdn.jsdelivr.net/gh/patrick-mns/localbot@elevenlabs-connector/assets/oauth-client.json",
+  "client_id": "https://cdn.jsdelivr.net/gh/patrick-mns/localbot@main/assets/oauth-client.json",
   "client_name": "Local Bot",
   "client_uri": "https://github.com/patrick-mns/localbot",
   "redirect_uris": [

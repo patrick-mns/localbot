@@ -37,7 +37,7 @@ interface AuthServer {
  * registration. Its redirect URIs are fixed, so the loopback uses one of these
  * ports.
  */
-const CLIENT_METADATA_URL = "https://cdn.jsdelivr.net/gh/patrick-mns/localbot@elevenlabs-connector/assets/oauth-client.json";
+const CLIENT_METADATA_URL = "https://cdn.jsdelivr.net/gh/patrick-mns/localbot@main/assets/oauth-client.json";
 const METADATA_PORTS = [47821, 47822, 47823];
 
 const UA = { "user-agent": "LocalBot (MCP client)" };
