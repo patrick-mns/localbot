@@ -227,6 +227,23 @@ enum MenuBar {
 
     static var keepsRunning: Bool { UserDefaults.standard.bool(forKey: key) && !quitting }
 
+    /// AppKit won't quit while a sheet (Settings, a bot editor, a confirmation)
+    /// is open, and doesn't ask the app first. Closes them all, then calls
+    /// `done` once they're gone (or after a couple of seconds regardless).
+    @MainActor
+    static func closeSheets(then done: @escaping () -> Void) {
+        AppModel.shared.sheet = nil
+        func sheets() -> [(NSWindow, NSWindow)] {
+            NSApplication.shared.windows.compactMap { w in w.attachedSheet.map { (w, $0) } }
+        }
+        for (window, sheet) in sheets() { window.endSheet(sheet) }
+        func wait(_ tries: Int) {
+            if sheets().isEmpty || tries == 0 { return done() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(tries - 1) }
+        }
+        DispatchQueue.main.async { wait(20) }
+    }
+
     /// Closes the windows and drops the Dock icon; the menu bar icon stays.
     static func hide() {
         for window in NSApplication.shared.windows where window.canBecomeMain { window.close() }
@@ -310,7 +327,7 @@ struct MenuBarMenu: View {
                 Spacer(minLength: 6)
                 Button("Quit") {
                     MenuBar.quitting = true
-                    NSApplication.shared.terminate(nil)
+                    MenuBar.closeSheets { NSApplication.shared.terminate(nil) }
                 }
                 .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.secondary)
             }
