@@ -32,6 +32,8 @@ export interface ModelInfo {
   id: string;
   name: string;
   contextLength?: number;
+  /** Longest reply the model can give, when the service says. */
+  maxOutput?: number;
 }
 
 export interface ChatRequest {

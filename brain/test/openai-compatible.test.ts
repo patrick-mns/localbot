@@ -15,7 +15,7 @@ async function serve(events: unknown[], status = 200) {
       lastBody = body ? JSON.parse(body) : undefined;
       if (req.url?.endsWith("/models")) {
         res.writeHead(200, { "content-type": "application/json" });
-        return res.end(JSON.stringify({ data: [{ id: "b-model" }, { id: "a-model", name: "A" }] }));
+        return res.end(JSON.stringify({ data: [{ id: "b-model" }, { id: "a-model", name: "A", top_provider: { max_completion_tokens: 4096 } }] }));
       }
       res.writeHead(status, { "content-type": "text/event-stream" });
       if (status !== 200) return res.end('{"error":"nope"}');
@@ -63,5 +63,25 @@ test("lists models sorted, and refuses without a key", async () => {
   assert.deepEqual((await p.models()).map((m) => m.id), ["a-model", "b-model"]);
   const none = new OpenAICompatibleProvider({ id: "t", label: "Test", baseURL: s.url, apiKey: () => undefined });
   await assert.rejects(none.models(), /no API key/);
+  s.close();
+});
+
+test("caps a reply at the configured length, or the model's own lower limit", async () => {
+  const s = await serve([]);
+  const p = new OpenAICompatibleProvider({ id: "t", label: "Test", baseURL: s.url, apiKey: () => "k", maxTokens: 16_384 });
+  await p.chat({ model: "b-model", messages: [], onDelta: () => {} });
+  assert.equal(s.body().max_tokens, 16_384);
+  await p.chat({ model: "a-model", messages: [], onDelta: () => {} });
+  assert.equal(s.body().max_tokens, 4096);
+  const uncapped = new OpenAICompatibleProvider({ id: "t", label: "Test", baseURL: s.url, apiKey: () => "k" });
+  await uncapped.chat({ model: "a-model", messages: [], onDelta: () => {} });
+  assert.equal(s.body().max_tokens, undefined);
+  s.close();
+});
+
+test("out of credits (402) says so in words", async () => {
+  const s = await serve([], 402);
+  const p = new OpenAICompatibleProvider({ id: "t", label: "OpenRouter", baseURL: s.url, apiKey: () => "k" });
+  await assert.rejects(p.chat({ model: "m", messages: [], onDelta: () => {} }), /OpenRouter doesn’t have enough credits/);
   s.close();
 });

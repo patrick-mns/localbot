@@ -9,6 +9,13 @@ export interface OpenAICompatibleOptions {
   headers?: Record<string, string>;
   /** Local servers (Ollama, LM Studio) need no key. */
   keyless?: boolean;
+  /**
+   * Cap on a reply's length (lowered to the model's own limit). OpenRouter
+   * holds back a request's worst-case cost from the balance while it runs;
+   * without a cap that is the model's whole output limit, so a few bots
+   * working at once could use up the credits and get refused (402).
+   */
+  maxTokens?: number;
 }
 
 /**
@@ -43,9 +50,14 @@ export class OpenAICompatibleProvider implements ChatProvider {
     if (!this.configured()) throw new Error(`${this.label} has no API key`);
     const res = await fetch(`${this.opts.baseURL}/models`, { headers: this.headers(), signal: AbortSignal.timeout(15_000) });
     if (!res.ok) throw new Error(`${this.label}: listing models failed (${res.status})`);
-    const body = (await res.json()) as { data?: { id: string; name?: string; display_name?: string; context_length?: number }[] };
+    const body = (await res.json()) as {
+      data?: { id: string; name?: string; display_name?: string; context_length?: number; top_provider?: { max_completion_tokens?: number | null } }[];
+    };
     const list = (body.data ?? [])
-      .map((m) => ({ id: m.id, name: m.name ?? m.display_name ?? m.id, contextLength: m.context_length }))
+      .map((m) => ({
+        id: m.id, name: m.name ?? m.display_name ?? m.id, contextLength: m.context_length,
+        maxOutput: m.top_provider?.max_completion_tokens ?? undefined,
+      }))
       .sort((a, b) => a.id.localeCompare(b.id));
     this.modelCache = { at: Date.now(), list };
     return list;
@@ -53,6 +65,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
 
   async chat({ model, messages, tools, signal, onDelta }: ChatRequest): Promise<ChatResult> {
     if (!this.configured()) throw new Error(`${this.label} has no API key`);
+    const maxTokens = await this.maxTokens(model);
     const res = await fetch(`${this.opts.baseURL}/chat/completions`, {
       method: "POST",
       headers: this.headers(),
@@ -60,6 +73,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
         model,
         messages,
         stream: true,
+        ...(maxTokens ? { max_tokens: maxTokens } : {}),
         ...(tools?.length
           ? { tools: tools.map((t) => ({ type: "function", function: t })), tool_choice: "auto" }
           : {}),
@@ -68,6 +82,9 @@ export class OpenAICompatibleProvider implements ChatProvider {
     });
     if (!res.ok || !res.body) {
       const detail = await res.text().catch(() => "");
+      if (res.status === 402) {
+        throw new Error(`${this.label} doesn’t have enough credits for this right now. Add credits, or try again when other bots finish.`);
+      }
       throw new Error(`${this.label} returned ${res.status}: ${detail.slice(0, 300)}`);
     }
 
@@ -110,5 +127,12 @@ export class OpenAICompatibleProvider implements ChatProvider {
       }
     }
     return done();
+  }
+
+  /** The reply cap for `model`: the configured one, or less if the model's limit is lower. */
+  private async maxTokens(model: string) {
+    if (!this.opts.maxTokens) return undefined;
+    const limit = await this.models().then((list) => list.find((m) => m.id === model)?.maxOutput, () => undefined);
+    return limit ? Math.min(limit, this.opts.maxTokens) : this.opts.maxTokens;
   }
 }
