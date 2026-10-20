@@ -1,7 +1,7 @@
 /**
  * Connectors: services bots can use after a one-click sign-in. Each is a
  * remote MCP server whose sign-in Local Bot can do on its own (OAuth with
- * dynamic client registration). Checked by hand; services that need Local Bot
+ * dynamic client registration or a client metadata document). Checked by hand; services that need Local Bot
  * registered with them first (GitHub, Asana, HubSpot, Box) aren't here yet.
  */
 export interface Connector {
@@ -10,7 +10,7 @@ export interface Connector {
   /** What bots can do with it, in a few words. */
   description: string;
   url: string;
-  category: "Work" | "Design" | "Developer" | "Business";
+  category: "Work" | "Design" | "Media" | "Developer" | "Business";
 }
 
 export const CONNECTORS: Connector[] = [
@@ -22,6 +22,7 @@ export const CONNECTORS: Connector[] = [
   { id: "canva", name: "Canva", description: "Find and create designs", url: "https://mcp.canva.com/mcp", category: "Design" },
   { id: "webflow", name: "Webflow", description: "Sites, pages and CMS", url: "https://mcp.webflow.com/mcp", category: "Design" },
   { id: "wix", name: "Wix", description: "Sites and business data", url: "https://mcp.wix.com/mcp", category: "Design" },
+  { id: "elevenlabs", name: "ElevenLabs", description: "Voices, speech and voice agents", url: "https://api.elevenlabs.io/v1/mcp", category: "Media" },
   { id: "sentry", name: "Sentry", description: "Errors and performance", url: "https://mcp.sentry.dev/mcp", category: "Developer" },
   { id: "vercel", name: "Vercel", description: "Projects and deployments", url: "https://mcp.vercel.com", category: "Developer" },
   { id: "supabase", name: "Supabase", description: "Databases and projects", url: "https://mcp.supabase.com/mcp", category: "Developer" },
