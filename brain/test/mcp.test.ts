@@ -31,6 +31,25 @@ test("a local MCP server: add, test, tools for a bot, call, remove", async () =>
   assert.deepEqual(mcp.list(), []);
 });
 
+test("a server with a huge tool list is searched instead of listed", async () => {
+  const mcp = new McpServers();
+  const s = await mcp.add({ name: "Big", transport: "stdio", command: process.execPath, args: [ECHO], env: { ECHO_MANY: "100" } });
+  // Two small tools stand in for all of them on every step.
+  const specs = await mcp.toolsFor([s.id]);
+  assert.deepEqual(specs.map((t) => t.name), ["find_app_tools", "use_app_tool"]);
+  assert.ok(JSON.stringify(specs).length < 2000);
+
+  const found = await mcp.call([s.id], "find_app_tools", JSON.stringify({ query: "repeat some text" }));
+  assert.match(found!.result, /^big__echo$/m);
+  assert.match(found!.result, /"text"/);
+  const ran = await mcp.call([s.id], "use_app_tool", JSON.stringify({ tool: "big__echo", arguments: { text: "hi" } }));
+  assert.match(ran!.result, /^echo: hi/);
+  const unknown = await mcp.call([s.id], "use_app_tool", JSON.stringify({ tool: "nope" }));
+  assert.match(unknown!.result, /no tool named/);
+
+  await mcp.remove(s.id);
+});
+
 test("bad input is refused with a plain reason", async () => {
   const mcp = new McpServers();
   await assert.rejects(mcp.add({ name: "", transport: "stdio", command: "x" }), /name/);

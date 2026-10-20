@@ -60,6 +60,19 @@ export interface McpServerInput {
 }
 
 const MAX_OUTPUT = 8000;
+/**
+ * Tool descriptions go to the model on every step of every run, so a server
+ * with many tools costs more than the work itself (ElevenLabs lists 160 tools,
+ * over a million characters: ~300k tokens a step). A server whose tools fit
+ * in this many characters sends them as they are; bigger ones are searched
+ * with find_app_tools and run with use_app_tool.
+ */
+const INLINE_TOOLS_CHARS = 20_000;
+const FIND_TOOL = "find_app_tools";
+const USE_TOOL = "use_app_tool";
+/** How much of the found tools' descriptions goes back to the model. */
+const FOUND_MAX = 5;
+const FOUND_CHARS = 24_000;
 const tokenAccount = (id: string) => `mcp:${id}:token`;
 const oauthAccount = (id: string) => `mcp:${id}:oauth`;
 const envAccount = (id: string, key: string) => `mcp:${id}:env:${key}`;
@@ -179,23 +192,90 @@ export class McpServers {
 
   /** Tools for a bot, from its enabled servers (connecting on first use). */
   async toolsFor(serverIds: string[]): Promise<ToolSpec[]> {
-    const specs: ToolSpec[] = [];
+    const { inline, searchable } = await this.catalog(serverIds);
+    if (!searchable.length) return inline;
+    const apps = [...new Set(searchable.map((t) => t.app))].join(", ");
+    return [
+      ...inline,
+      {
+        name: FIND_TOOL,
+        description: `Find tools of connected apps that have too many to list here (${apps}). ` +
+          `Describe what you want to do in English; returns the matching tools and their parameters. Then run one with ${USE_TOOL}.`,
+        parameters: {
+          type: "object",
+          properties: { query: { type: "string", description: "What you want to do, e.g. \"turn text into speech\"" } },
+          required: ["query"],
+        },
+      },
+      {
+        name: USE_TOOL,
+        description: `Run a tool found with ${FIND_TOOL}.`,
+        parameters: {
+          type: "object",
+          properties: {
+            tool: { type: "string", description: `The tool's exact name, as ${FIND_TOOL} gave it` },
+            arguments: { type: "object", description: "The tool's parameters" },
+          },
+          required: ["tool"],
+        },
+      },
+    ];
+  }
+
+  /** A bot's MCP tools: those of small servers as they are, the rest to search. */
+  private async catalog(serverIds: string[]) {
+    const inline: ToolSpec[] = [];
+    const searchable: (ToolSpec & { app: string })[] = [];
     for (const s of this.forBot(serverIds)) {
       const rt = this.runtimeFor(s);
       if (!rt.tools) await this.test(s.id).catch(() => {});
-      for (const t of rt.tools ?? []) {
-        specs.push({
-          name: `${slug(s.name)}__${t.name}`.slice(0, 64),
-          description: `[${s.name}] ${t.description ?? t.name}`.slice(0, 1000),
-          parameters: t.inputSchema ?? { type: "object", properties: {} },
-        });
-      }
+      const specs: ToolSpec[] = (rt.tools ?? []).map((t) => ({
+        name: `${slug(s.name)}__${t.name}`.slice(0, 64),
+        description: `[${s.name}] ${t.description ?? t.name}`.slice(0, 1000),
+        parameters: t.inputSchema ?? { type: "object", properties: {} },
+      }));
+      if (JSON.stringify(specs).length <= INLINE_TOOLS_CHARS) inline.push(...specs);
+      else searchable.push(...specs.map((t) => ({ ...t, app: s.name })));
     }
-    return specs;
+    return { inline, searchable };
+  }
+
+  /** The searchable tools that best match `query`, with their parameters. */
+  private async find(serverIds: string[], rawArgs: string) {
+    const { searchable } = await this.catalog(serverIds);
+    let query = "";
+    try { query = String(JSON.parse(rawArgs || "{}").query ?? ""); } catch {}
+    const words = query.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1);
+    const scored = searchable
+      .map((t) => {
+        const name = t.name.toLowerCase(), text = (t.description ?? "").toLowerCase();
+        return { t, score: words.reduce((n, w) => n + (name.includes(w) ? 3 : 0) + (text.includes(w) ? 1 : 0), 0) };
+      })
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, FOUND_MAX);
+    const apps = [...new Set(searchable.map((t) => t.app))].join(", ");
+    const activity = `Looked for ${apps} tools: “${query.slice(0, 60)}”`;
+    if (!scored.length) {
+      const names = searchable.map((t) => `- ${t.name}: ${(t.description ?? "").replace(/^\[[^\]]*\] /, "").slice(0, 80)}`).join("\n");
+      return { result: `No tool matched. All of them:\n${names}`.slice(0, FOUND_CHARS), activity };
+    }
+    const result = scored
+      .map(({ t }) => `${t.name}\n${t.description}\nParameters: ${JSON.stringify(t.parameters)}`.slice(0, FOUND_CHARS / FOUND_MAX))
+      .join("\n\n");
+    return { result: `Run one with ${USE_TOOL}.\n\n${result}`, activity };
   }
 
   /** Runs a `<server>__<tool>` call for a bot; returns text for the model. */
   async call(serverIds: string[], name: string, rawArgs: string): Promise<{ result: string; activity: string } | null> {
+    if (name === FIND_TOOL) return this.find(serverIds, rawArgs);
+    if (name === USE_TOOL) {
+      let picked: { tool?: unknown; arguments?: unknown } = {};
+      try { picked = JSON.parse(rawArgs || "{}"); } catch {}
+      const tool = String(picked.tool ?? "");
+      const out = tool === FIND_TOOL || tool === USE_TOOL ? null : await this.call(serverIds, tool, JSON.stringify(picked.arguments ?? {}));
+      return out ?? { result: `Error: no tool named “${picked.tool}”. Use ${FIND_TOOL} to find it.`, activity: "Couldn’t find an app tool" };
+    }
     const s = this.forBot(serverIds).find((x) => name.startsWith(`${slug(x.name)}__`));
     if (!s) return null;
     const tool = name.slice(slug(s.name).length + 2);
