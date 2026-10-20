@@ -1,0 +1,13 @@
+{
+  "client_id": "https://cdn.jsdelivr.net/gh/patrick-mns/localbot@main/assets/oauth-client.json",
+  "client_name": "Local Bot",
+  "client_uri": "https://github.com/patrick-mns/localbot",
+  "redirect_uris": [
+    "http://127.0.0.1:47821/callback",
+    "http://127.0.0.1:47822/callback",
+    "http://127.0.0.1:47823/callback"
+  ],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none"
+}

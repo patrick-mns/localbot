@@ -6,8 +6,9 @@ import type { AddressInfo } from "node:net";
  * Sign-in for remote MCP servers (the MCP authorization spec: OAuth 2.1 with
  * PKCE). The server's 401 points to its protected-resource metadata, which
  * names the authorization server; Local Bot registers itself there (dynamic
- * client registration), opens the sign-in page in the browser and takes the
- * code on a one-off loopback address. Tokens go to the Keychain (the caller
+ * client registration) or, where the server reads client metadata documents
+ * instead, names itself by the URL of its published one. It opens the sign-in
+ * page in the browser and takes the code on a one-off loopback address. Tokens go to the Keychain (the caller
  * stores them) and are refreshed when they expire.
  */
 export interface OAuthTokens {
@@ -25,8 +26,19 @@ interface AuthServer {
   authorization_endpoint: string;
   token_endpoint: string;
   registration_endpoint?: string;
+  client_id_metadata_document_supported?: boolean;
   scopes_supported?: string[];
 }
+
+/**
+ * Local Bot's client metadata document (assets/oauth-client.json, served from
+ * the repo through jsDelivr, which sends it as JSON; GitHub's raw files are
+ * plain text and get refused): its URL is the client id for servers without
+ * registration. Its redirect URIs are fixed, so the loopback uses one of these
+ * ports.
+ */
+const CLIENT_METADATA_URL = "https://cdn.jsdelivr.net/gh/patrick-mns/localbot@main/assets/oauth-client.json";
+const METADATA_PORTS = [47821, 47822, 47823];
 
 const UA = { "user-agent": "LocalBot (MCP client)" };
 const SIGN_IN_TIMEOUT_MS = 10 * 60_000;
@@ -86,36 +98,24 @@ export async function startSignIn(serverUrl: string, clientName = "Local Bot"): 
   const found = await discover(serverUrl);
   if (!found) throw new Error("This server doesn’t need a sign-in");
   const { authServer, scopes } = found;
-  if (!authServer.registration_endpoint) {
+  const byMetadata = !authServer.registration_endpoint && authServer.client_id_metadata_document_supported;
+  if (!authServer.registration_endpoint && !byMetadata) {
     throw new Error("This service needs Local Bot to be registered with it first; it isn’t supported yet");
   }
 
   // One-off loopback address for the browser to come back to.
-  let server: Server;
-  const port = await new Promise<number>((resolve, reject) => {
-    server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port));
-  });
+  const { server, port } = await listen(byMetadata ? METADATA_PORTS : [0]);
   const redirectUri = `http://127.0.0.1:${port}/callback`;
 
-  const reg = await fetch(authServer.registration_endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json", ...UA },
-    body: JSON.stringify({
-      client_name: clientName,
-      redirect_uris: [redirectUri],
-      grant_types: ["authorization_code", "refresh_token"],
-      response_types: ["code"],
-      token_endpoint_auth_method: "none",
-    }),
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!reg.ok) {
-    server!.close();
-    throw new Error(`The service refused to register Local Bot (HTTP ${reg.status})`);
+  let client: { client_id: string; client_secret?: string } = { client_id: CLIENT_METADATA_URL };
+  if (!byMetadata) {
+    try {
+      client = await register(authServer.registration_endpoint!, clientName, redirectUri);
+    } catch (err) {
+      server.close();
+      throw err;
+    }
   }
-  const client = (await reg.json()) as { client_id: string; client_secret?: string };
 
   const verifier = b64url(randomBytes(32));
   const challenge = b64url(createHash("sha256").update(verifier).digest());
@@ -173,6 +173,40 @@ export async function startSignIn(serverUrl: string, clientName = "Local Bot"): 
     });
   });
   return { url: auth.toString(), done, cancel: () => cancel() };
+}
+
+/** Dynamic client registration: a client id of Local Bot's own on this server. */
+async function register(endpoint: string, clientName: string, redirectUri: string) {
+  const reg = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json", ...UA },
+    body: JSON.stringify({
+      client_name: clientName,
+      redirect_uris: [redirectUri],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!reg.ok) throw new Error(`The service refused to register Local Bot (HTTP ${reg.status})`);
+  return (await reg.json()) as { client_id: string; client_secret?: string };
+}
+
+/** A loopback server on the first of `ports` that's free (0: any port). */
+async function listen(ports: number[]): Promise<{ server: Server; port: number }> {
+  for (const [i, wanted] of ports.entries()) {
+    try {
+      return await new Promise((resolve, reject) => {
+        const server = createServer();
+        server.once("error", reject);
+        server.listen(wanted, "127.0.0.1", () => resolve({ server, port: (server.address() as AddressInfo).port }));
+      });
+    } catch (err) {
+      if (i === ports.length - 1) throw new Error("Couldn’t open a local address for the sign-in; try again");
+    }
+  }
+  throw new Error("No port to listen on");
 }
 
 /** A fresh access token from the refresh token. */

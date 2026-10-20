@@ -8,7 +8,7 @@ struct ConnectorsPage: View {
     let open: (String) -> Void
     @State private var errors: [String: String] = [:]
 
-    private let categories = ["Work", "Design", "Developer", "Business"]
+    private let categories = ["Work", "Design", "Media", "Developer", "Business"]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
