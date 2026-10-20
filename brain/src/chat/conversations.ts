@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Bot } from "../bots/bots.ts";
 import { ASK_BOT_TOOL, COMPUTER_TOOLS, ROUTINE_TOOLS, SHARE_FILE_TOOL, runTool, suggestConnectionTool } from "../agent/tools.ts";
-import { FileStore, readDeviceFile, type Attachment } from "./files.ts";
+import { FileStore, readDeviceFile, writeDeviceFile, type Attachment } from "./files.ts";
 import type { McpServers } from "../mcp/servers.ts";
 import { MessageStore } from "./messages.ts";
 import type { Routines } from "../routines/routines.ts";
@@ -59,6 +59,8 @@ interface TurnOptions {
   from?: Message["from"];
   /** Posted by Local Bot itself (an app got connected). */
   notice?: boolean;
+  /** Files the user sent with the message. */
+  files?: Attachment[];
   /** Bots already working on this request, outermost first (prevents loops). */
   chain?: string[];
 }
@@ -148,8 +150,8 @@ export class Conversations {
   }
 
   /** Records the user's message and runs the bot in the background; progress arrives as events. */
-  async send(bot: Bot, text: string) {
-    const { userId } = this.start(bot, text);
+  async send(bot: Bot, text: string, files: Attachment[] = []) {
+    const { userId } = this.start(bot, text || (files.length ? "(sent files)" : ""), { files });
     return { userId };
   }
 
@@ -159,13 +161,13 @@ export class Conversations {
   }
 
   private start(bot: Bot, text: string, opts: TurnOptions = {}) {
-    const { routine, from, notice } = opts;
+    const { routine, from, notice, files } = opts;
     const chain = opts.chain ?? [bot.id];
     if (this.running.has(bot.id)) throw new Error(`${bot.name} is still working`);
     const prompt = text.trim();
     if (!prompt) throw new Error("Empty message");
 
-    const user = this.add({ botId: bot.id, role: "user", text: prompt, ...(routine ? { routine } : {}), ...(from ? { from } : {}), ...(notice ? { notice } : {}) });
+    const user = this.add({ botId: bot.id, role: "user", text: prompt, ...(routine ? { routine } : {}), ...(from ? { from } : {}), ...(notice ? { notice } : {}), ...(files?.length ? { files } : {}) });
     this.emit("message", user);
 
     const abort = new AbortController();
@@ -202,6 +204,8 @@ export class Conversations {
     } catch (err) {
       this.failure(bot, "Couldn’t reach the device", err);
     }
+    // Files the user just sent go to the device first, so the bot is told where.
+    if (place) await this.deliverFiles(bot, place);
     const transcript: ChatMessage[] = [
       { role: "system", content: this.system(bot, place, teammates) },
       ...(offers.length
@@ -611,11 +615,58 @@ export class Conversations {
     ].filter(Boolean).join("\n\n");
   }
 
+  /** Copies the files of the user's latest message to the device (once). */
+  private async deliverFiles(bot: Bot, place: Workplace) {
+    const last = this.history(bot.id).filter((m) => m.role === "user").at(-1);
+    const pending = last?.files?.filter((f) => !f.devicePath) ?? [];
+    if (!last || !pending.length) return;
+    const files = [...last.files!];
+    for (const f of pending) {
+      try {
+        const path = await writeDeviceFile(place.hands, "~/Downloads", f.name, this.files.read(bot.id, f));
+        files[files.indexOf(f)] = { ...f, devicePath: path };
+      } catch (err) {
+        this.failure(bot, `Couldn’t put ${f.name} on the device`, err);
+      }
+    }
+    this.emit("message", this.messages.upsert({ ...last, files }));
+  }
+
+  /**
+   * The user's message as the model sees it: the text, where the files are on
+   * the device, small text files inline and, for the latest message, the
+   * images themselves (the model can look at them).
+   */
+  private userContent(bot: Bot, m: Message, latest: boolean): ChatMessage["content"] {
+    const files = m.files ?? [];
+    const notes = files.map((f) => `- ${f.name} (${f.mime}, ${f.size} bytes)${f.devicePath ? ` — on your device at ${f.devicePath}` : ""}`);
+    let text = m.text === "(sent files)" ? "" : m.text;
+    if (notes.length) text += `${text ? "\n\n" : ""}[The user sent ${files.length === 1 ? "a file" : "files"}:\n${notes.join("\n")}]`;
+    if (!latest) return text;
+    const parts: ContentPart[] = [];
+    for (const f of files) {
+      if (/^(text\/|application\/json)/.test(f.mime) && f.size <= 40_000) {
+        try { text += `\n\n--- ${f.name} ---\n${this.files.read(bot.id, f).toString("utf8")}`; } catch {}
+      }
+    }
+    parts.push({ type: "text", text });
+    for (const f of files.filter((x) => /^image\/(png|jpeg|gif|webp)$/.test(x.mime) && x.size <= 5_000_000).slice(0, 4)) {
+      try {
+        parts.push({ type: "image_url", image_url: { url: `data:${f.mime};base64,${this.files.read(bot.id, f).toString("base64")}` } });
+      } catch {}
+    }
+    return parts.length > 1 ? parts : text;
+  }
+
   private past(bot: Bot): ChatMessage[] {
-    return this.history(bot.id)
+    const list = this.history(bot.id)
       .filter((m) => (m.role === "user" || m.role === "assistant") && !m.error && (m.text || m.files?.length || m.connect))
-      .slice(-HISTORY_LIMIT)
-      .map((m) => ({
+      .slice(-HISTORY_LIMIT);
+    const lastUser = list.filter((m) => m.role === "user").at(-1);
+    return list
+      .map((m): ChatMessage => m.role === "user" && m.files?.length
+        ? { role: "user" as const, content: this.userContent(bot, m, m === lastUser) as any }
+        : {
         role: m.role as "user" | "assistant",
         content: m.files?.length && !m.text
           ? `(Shared files: ${m.files.map((f) => f.name).join(", ")})`
@@ -628,7 +679,7 @@ export class Conversations {
               : m.connect
                 ? `(Asked the user to ${m.connect.mode} ${m.connect.name}: ${m.connect.state})`
                 : m.text,
-      }));
+      });
   }
 
   private draft(bot: Bot): Message {

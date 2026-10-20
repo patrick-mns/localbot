@@ -253,3 +253,34 @@ test("a bot asks to connect an app; once connected it continues on its own", asy
   assert.match(last, /Asked the user to connect Notion: connected/);
   assert.match(last, /\[Local Bot\] Notion is connected now/);
 });
+
+test("files the user sends reach the device and the model sees images and text", async () => {
+  const written = new Map<string, Buffer>();
+  class DeviceDisk extends FakeHands {
+    override async shell(command: string) {
+      const pick = /n='([^']+)'; i=2/.exec(command);
+      if (pick) { written.set(`/home/cua/Downloads/${pick[1]}`, Buffer.alloc(0)); return { code: 0, output: `/home/cua/Downloads/${pick[1]}` }; }
+      const append = /printf '%s' '([A-Za-z0-9+/=]*)' \| base64 -d >> '([^']+)'/.exec(command);
+      if (append) { written.set(append[2], Buffer.concat([written.get(append[2]) ?? Buffer.alloc(0), Buffer.from(append[1], "base64")])); return { code: 0, output: "" }; }
+      return { code: 0, output: "" };
+    }
+  }
+  const { conv, fakes, bots, id } = setup({ a: [{ text: "Vi a imagem." }] }, { hands: new DeviceDisk() });
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
+  const files = [conv.files.save(id.a, "print.png", png), conv.files.save(id.a, "notes.txt", Buffer.from("comprar pão"))];
+  await conv.send(bots[0], "o que tem aqui?", files);
+  await settle(conv, bots);
+
+  // On the device, byte for byte.
+  assert.ok(written.get("/home/cua/Downloads/print.png")?.equals(png));
+  assert.equal(written.get("/home/cua/Downloads/notes.txt")?.toString(), "comprar pão");
+  // Stored with where they went.
+  const sent = conv.history(id.a).find((m) => m.role === "user")!;
+  assert.deepEqual(sent.files?.map((f) => f.devicePath), ["/home/cua/Downloads/print.png", "/home/cua/Downloads/notes.txt"]);
+  // The model got the text, where the files are, the text file inline and the image.
+  const user = fakes.a.requests[0].messages.filter((m) => m.role === "user").find((m) => Array.isArray(m.content) && (m.content as any[])[0]?.text?.includes("o que tem aqui?"))!;
+  const parts = user.content as any[];
+  assert.match(parts[0].text, /on your device at \/home\/cua\/Downloads\/print\.png/);
+  assert.match(parts[0].text, /--- notes\.txt ---\ncomprar pão/);
+  assert.ok(parts.some((p) => p.type === "image_url" && p.image_url.url.startsWith("data:image/png;base64,")));
+});

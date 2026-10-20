@@ -951,7 +951,12 @@ final class Brain: ObservableObject {
         if page.more { olderMessages.insert(botID) } else { olderMessages.remove(botID) }
     }
 
-    func send(_ text: String, to botID: String) async { await perform("chat.send", ["botId": botID, "text": text]) }
+    /// A message, with files picked, dropped or pasted (sent by path: same Mac).
+    func send(_ text: String, to botID: String, files: [URL] = []) async {
+        var params: [String: Any] = ["botId": botID, "text": text]
+        if !files.isEmpty { params["files"] = files.map { ["name": $0.lastPathComponent, "path": $0.path] } }
+        await perform("chat.send", params)
+    }
     func stop(_ botID: String) async { await perform("chat.stop", ["botId": botID]) }
 
     func clearChat(_ botID: String) async {
