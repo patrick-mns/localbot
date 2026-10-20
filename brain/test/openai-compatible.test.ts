@@ -85,3 +85,13 @@ test("out of credits (402) says so in words", async () => {
   await assert.rejects(p.chat({ model: "m", messages: [], onDelta: () => {} }), /OpenRouter doesn’t have enough credits/);
   s.close();
 });
+
+test("asks for prompt caching only for the models that support it", async () => {
+  const s = await serve([]);
+  const p = new OpenAICompatibleProvider({ id: "t", label: "Test", baseURL: s.url, apiKey: () => "k", promptCache: /^anthropic\// });
+  await p.chat({ model: "anthropic/claude-haiku-5.5", messages: [], onDelta: () => {} });
+  assert.deepEqual(s.body().cache_control, { type: "ephemeral" });
+  await p.chat({ model: "openai/gpt-5", messages: [], onDelta: () => {} });
+  assert.equal(s.body().cache_control, undefined);
+  s.close();
+});

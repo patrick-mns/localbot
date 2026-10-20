@@ -16,6 +16,13 @@ export interface OpenAICompatibleOptions {
    * working at once could use up the credits and get refused (402).
    */
   maxTokens?: number;
+  /**
+   * Models (by id) whose prompts the service caches when asked. Each step of
+   * a run sends the whole conversation again; cached, the repeated part costs
+   * a tenth (OpenRouter's automatic caching for Claude: it moves the cache
+   * point to the end as the conversation grows).
+   */
+  promptCache?: RegExp;
 }
 
 /**
@@ -74,6 +81,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
         messages,
         stream: true,
         ...(maxTokens ? { max_tokens: maxTokens } : {}),
+        ...(this.opts.promptCache?.test(model) ? { cache_control: { type: "ephemeral" } } : {}),
         ...(tools?.length
           ? { tools: tools.map((t) => ({ type: "function", function: t })), tool_choice: "auto" }
           : {}),
