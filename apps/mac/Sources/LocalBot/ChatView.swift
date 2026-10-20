@@ -1,10 +1,14 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ChatView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var brain: Brain
     let bot: Brain.Bot
     @State private var draft = ""
+    /// Files to send with the next message.
+    @State private var pending: [URL] = []
+    @State private var dropping = false
     /// Whether the end of the chat is on screen; new text follows only then.
     @State private var atBottom = true
     @State private var tab: Tab = .chat
@@ -36,6 +40,12 @@ struct ChatView: View {
             if tab == .chat { composer }
         }
         .background(Theme.sidebar)
+        // Drop files anywhere in the chat to send them with the next message.
+        .onDrop(of: [.fileURL, .image], isTargeted: $dropping) { providers in
+            guard tab == .chat, ready else { return false }
+            addFiles(from: providers)
+            return true
+        }
         .task { await brain.loadHistory(bot.id) }
         .onAppear { focused = true }
     }
@@ -135,7 +145,20 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                if !pending.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(pending, id: \.self) { url in
+                                PendingFileChip(url: url) { pending.removeAll { $0 == url } }
+                            }
+                        }
+                    }
+                }
             HStack(alignment: .bottom, spacing: 8) {
+                IconButton(systemImage: "plus", help: "Add files or images") { pickFiles() }
+                    .disabled(!ready)
+                    .padding(.bottom, 2)
                 TextField(ready ? "Message \(bot.name)…" : "Add an AI provider in Settings",
                           text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -157,20 +180,63 @@ struct ChatView: View {
                 .accessibilityLabel(thinking ? "Stop" : "Send")
                 .help(thinking ? "Stop the current task" : "Send message")
             }
-            .padding(.leading, 14).padding(.trailing, 8).padding(.vertical, 8)
+            }
+            .padding(.leading, 8).padding(.trailing, 8).padding(.vertical, 8)
             .background(RoundedRectangle(cornerRadius: 18).fill(Theme.surface))
-            .hairline(18)
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(dropping ? Theme.text.opacity(0.6) : Theme.border, lineWidth: dropping ? 1.5 : 1))
             .padding(14)
+            // ⌘V with an image or files copied adds them; plain text pastes as usual.
+            .onPasteCommand(of: [.fileURL, .png, .tiff, .image]) { providers in addFiles(from: providers) }
         }
     }
 
-    private var canSend: Bool { ready && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private func pickFiles() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.prompt = "Add"
+        if panel.runModal() == .OK { add(panel.urls) }
+    }
+
+    private func add(_ urls: [URL]) {
+        for url in urls where !pending.contains(url) && pending.count < 10 { pending.append(url) }
+    }
+
+    /// Dropped or pasted: files come as URLs; a copied image (a screenshot) is
+    /// saved to a temporary PNG first.
+    private func addFiles(from providers: [NSItemProvider]) {
+        for p in providers {
+            if p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                _ = p.loadObject(ofClass: URL.self) { url, _ in
+                    if let url { Task { @MainActor in add([url]) } }
+                }
+            } else if p.canLoadObject(ofClass: NSImage.self) {
+                _ = p.loadObject(ofClass: NSImage.self) { image, _ in
+                    guard let image = image as? NSImage, let tiff = image.tiffRepresentation,
+                          let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return }
+                    let url = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("Pasted image \(Self.stamp()).png")
+                    try? png.write(to: url)
+                    Task { @MainActor in add([url]) }
+                }
+            }
+        }
+    }
+
+    private static func stamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        return f.string(from: Date())
+    }
+
+    private var canSend: Bool { ready && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pending.isEmpty) }
 
     private func send() {
         guard canSend, !thinking else { return }
-        let text = draft
+        let text = draft, files = pending
         draft = ""
-        Task { await brain.send(text, to: bot.id) }
+        pending = []
+        Task { await brain.send(text, to: bot.id, files: files) }
     }
 
     private func stop() { Task { await brain.stop(bot.id) } }
@@ -216,6 +282,10 @@ struct MessageRow: View {
                 Label("From \(from.name)", systemImage: "arrow.turn.down.left")
                     .font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.tertiary)
               }
+              if let files = message.files, !files.isEmpty {
+                AttachmentsView(files: files, botID: message.botId)
+              }
+              if message.text != "(sent files)" {
               HStack {
                 Spacer(minLength: 48)
                 Text(message.text)
@@ -225,6 +295,7 @@ struct MessageRow: View {
                     // A teammate's request is outlined so it doesn't read as the user's own message.
                     .background(RoundedRectangle(cornerRadius: 16).fill(message.from == nil ? Theme.raised : Theme.surface))
                     .overlay(RoundedRectangle(cornerRadius: 16).stroke(message.from == nil ? Color.clear : Theme.border))
+              }
               }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -544,5 +615,38 @@ struct BotMenu: View {
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
         .help("Bot options")
         .accessibilityLabel("Bot options")
+    }
+}
+
+
+/// A file waiting to be sent: a thumbnail for images, an icon otherwise, and ×.
+private struct PendingFileChip: View {
+    let url: URL
+    let remove: () -> Void
+    @State private var thumb: NSImage?
+
+    private var isImage: Bool { UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Group {
+                if let thumb {
+                    Image(nsImage: thumb).resizable().scaledToFill()
+                } else {
+                    Image(systemName: isImage ? "photo" : "doc").font(.system(size: 13)).foregroundStyle(Theme.secondary)
+                }
+            }
+            .frame(width: 30, height: 30)
+            .background(Theme.raised)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            Text(url.lastPathComponent).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+                .frame(maxWidth: 120, alignment: .leading)
+            IconButton(systemImage: "xmark", help: "Remove") { remove() }
+        }
+        .padding(.leading, 4).padding(.trailing, 2).padding(.vertical, 3)
+        .background(RoundedRectangle(cornerRadius: 9).fill(Theme.raised.opacity(0.6)))
+        .task(id: url) {
+            if isImage { thumb = await Thumbnails.downsampled(url, maxPixels: 120) }
+        }
     }
 }

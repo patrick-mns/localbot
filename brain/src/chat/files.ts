@@ -10,6 +10,8 @@ export interface Attachment {
   name: string;
   size: number;
   mime: string;
+  /** Where it was copied on the bot's device (files the user sent). */
+  devicePath?: string;
 }
 
 /** Larger files stay on the device; the bot says where they are instead. */
@@ -88,4 +90,29 @@ export async function readDeviceFile(hands: Hands, path: string): Promise<Buffer
   const data = Buffer.concat(parts);
   if (data.length !== size) throw new Error(`Read ${data.length} of ${size} bytes of ${path}`);
   return data;
+}
+
+/**
+ * Copies a file to a device through its shell, in base64 chunks small enough
+ * for a command line. Returns the path it ended up at (a free name in `dir`).
+ */
+export async function writeDeviceFile(hands: Hands, dir: string, name: string, data: Buffer): Promise<string> {
+  const safe = basename(name).replace(/[^\w.\- ]/g, "_") || "file";
+  const ext = extname(safe), stem = safe.slice(0, safe.length - ext.length);
+  // "~/x" means the device user's home (a quoted ~ wouldn't expand).
+  const target = dir.startsWith("~/") ? `"$HOME"/${quote(dir.slice(2))}` : quote(dir);
+  const pick = await hands.shell(
+    `mkdir -p ${target} && cd ${target} && n=${quote(safe)}; i=2; ` +
+    `while [ -e "$n" ]; do n=${quote(stem)}" $i"${quote(ext)}; i=$((i+1)); done; : > "$n" && printf '%s/%s' "$PWD" "$n"`,
+  );
+  const path = pick.output.trim().split("\n").pop() ?? "";
+  if (pick.code !== 0 || !path.startsWith("/")) throw new Error(`Couldn’t create ${safe} on the device`);
+  // Linux caps one command-line argument at 128 KB: 64 KB of bytes is ~87 KB of base64.
+  const CHUNK = 64 * 1024;
+  for (let at = 0; at < data.length; at += CHUNK) {
+    const b64 = data.subarray(at, at + CHUNK).toString("base64");
+    const r = await hands.shell(`printf '%s' '${b64}' | base64 -d >> ${quote(path)}`, 120_000);
+    if (r.code !== 0) throw new Error(`Couldn’t copy ${safe} to the device`);
+  }
+  return path;
 }

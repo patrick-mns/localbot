@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { avatarOptions, avatarSVG, randomAvatar } from "./bots/avatar.ts";
 import { Bots } from "./bots/bots.ts";
@@ -400,7 +401,20 @@ export const methods: Record<string, Handler> = {
   "chat.history": ({ botId }) => conversations.history(botId),
   /** A page of a chat (the app loads the latest, then older ones on scroll). */
   "chat.page": ({ botId, limit, before }) => conversations.page(String(botId), Number(limit) || 100, before ? String(before) : undefined),
-  "chat.send": ({ botId, text }) => conversations.send(bots.get(botId), text),
+  /**
+   * A message, optionally with files: `{name, path}` when the app shares this
+   * disk, `{name, data}` (base64) otherwise. Up to 10 files, 50 MB each.
+   */
+  "chat.send": async ({ botId, text, files }) => {
+    const bot = bots.get(botId);
+    const list = Array.isArray(files) ? files.slice(0, 10) : [];
+    const saved = list.map((f: { name?: string; path?: string; data?: string }) => {
+      const data = f.path ? readFileSync(String(f.path)) : Buffer.from(String(f.data ?? ""), "base64");
+      if (data.length > 50 * 1024 * 1024) throw new Error(`${f.name} is over 50 MB`);
+      return conversations.files.save(bot.id, String(f.name || "file"), data);
+    });
+    return conversations.send(bot, String(text ?? ""), saved);
+  },
   "chat.stop": ({ botId }) => conversations.stop(botId),
   "chat.clear": ({ botId }) => conversations.clear(botId),
   /** A file a bot shared, base64-encoded, for the app to save or preview. */
@@ -631,6 +645,10 @@ for (const [method, key] of Object.entries(botScoped)) {
     if (!cloud.isHosted(params?.[key])) return local(params);
     const p = { ...params };
     if (p.computerId) p.computerId = await cloudDeviceFor(p.computerId);
+    // The cloud can't read this Mac's disk: files the app passed by path go as bytes.
+    if (method === "chat.send" && Array.isArray(p.files)) {
+      p.files = p.files.map((f: any) => (f.path ? { name: f.name, data: readFileSync(String(f.path)).toString("base64") } : f));
+    }
     const result: any = await cloud.call(method, p);
     return result?.computers ? { ...result, host: "cloud", computers: result.computers.map((a: any) => cloud.toLocalAccess(a)) } : result;
   };
