@@ -28,6 +28,8 @@ export interface Preset {
   suggestedModel?: string;
   keyURL?: string;
   headers?: Record<string, string>;
+  /** Cap on a reply's length; see OpenAICompatibleOptions.maxTokens. */
+  maxTokens?: number;
 }
 
 export const PRESETS: Preset[] = [
@@ -35,6 +37,7 @@ export const PRESETS: Preset[] = [
     id: "openrouter", label: "OpenRouter", baseURL: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY",
     suggestedModel: "anthropic/claude-haiku-5.5", keyURL: "https://openrouter.ai/keys",
     headers: { "HTTP-Referer": "https://github.com/patrick-mns/localbot", "X-Title": "Local Bot" },
+    maxTokens: 16_384,
   },
   { id: "openai", label: "OpenAI", baseURL: "https://api.openai.com/v1", envKey: "OPENAI_API_KEY", keyURL: "https://platform.openai.com/api-keys" },
   { id: "anthropic", label: "Anthropic", baseURL: "https://api.anthropic.com/v1", envKey: "ANTHROPIC_API_KEY", suggestedModel: "claude-haiku-5-5", keyURL: "https://console.anthropic.com/settings/keys" },
@@ -169,6 +172,7 @@ export function provider(id: string): ChatProvider {
     baseURL: c.baseURL.replace(/\/+$/, ""),
     apiKey: () => keyOf(config(id)),
     headers: p.headers,
+    maxTokens: p.maxTokens,
     keyless: p.keyless || (p.id === "custom" && !keyOf(c)),
   });
   clients.set(id, { signature, client });
