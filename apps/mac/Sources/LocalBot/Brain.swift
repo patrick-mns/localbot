@@ -358,6 +358,7 @@ final class Brain: ObservableObject {
                 await refreshRoutines()
                 await refreshCloud()
                 await refreshMcp()
+                await refreshUserAccount()
                 loaded = true
                 await checkService()
                 // Computers change outside the app too (docker, lume); poll for state.
@@ -454,7 +455,19 @@ final class Brain: ObservableObject {
         let devices: Int
     }
 
+    /// User account (GitHub OAuth).
+    struct UserAccount: Decodable, Identifiable, Hashable {
+        let id: String
+        let name: String
+        let email: String
+        let login: String?
+        let createdAt: String
+
+        var displayName: String { login ?? name }
+    }
+
     @Published private(set) var deviceAccounts: [DeviceAccount] = []
+    @Published private(set) var userAccount: UserAccount? = nil
 
     func refreshDeviceAccounts() async {
         if let list: [DeviceAccount] = try? await request("deviceProviders.status") { deviceAccounts = list }
@@ -474,6 +487,34 @@ final class Brain: ObservableObject {
     func disconnectDeviceAccount(_ id: String) async {
         if let list: [DeviceAccount] = try? await request("deviceProviders.disconnect", ["id": id]) { deviceAccounts = list }
         await refreshComputers()
+    }
+
+    func refreshUserAccount() async {
+        if let account: UserAccount = try? await request("auth.user") { userAccount = account }
+    }
+
+    /// Start GitHub sign-in flow: returns URL to open in browser.
+    func startUserSignIn() async -> String? {
+        try? await request("auth.signInURL")
+    }
+
+    /// Complete sign-in with one-time token from callback.
+    func completeUserSignIn(_ token: String) async -> String? {
+        do {
+            userAccount = try await request("auth.verifyToken", ["token": token])
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func signOutUser() async {
+        do {
+            try await request("auth.signOut")
+            userAccount = nil
+        } catch {
+            print("Sign out error: \(error)")
+        }
     }
 
     func deviceKinds() async -> [DeviceKind] {

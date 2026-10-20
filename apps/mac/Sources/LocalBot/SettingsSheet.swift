@@ -13,6 +13,7 @@ struct SettingsSheet: View {
         case appearance
         case background
         case defaults
+        case account
         case addProvider
         case provider(String)
         case deviceAccount(String)
@@ -64,6 +65,7 @@ struct SettingsSheet: View {
                 SidebarItem(icon: "circle.lefthalf.filled", title: "Appearance", selected: page == .appearance) { page = .appearance }
                 SidebarItem(icon: "sparkles", title: "Default model", selected: page == .defaults) { page = .defaults }
                 SidebarItem(icon: "moon.zzz", title: "Background", selected: page == .background) { page = .background }
+                SidebarItem(icon: "person.crop.circle", title: "Account", selected: page == .account) { page = .account }
                 SidebarItem(icon: "square.grid.2x2", title: "Connectors", selected: page == .connectors) { page = .connectors }
                 SidebarItem(icon: "wand.and.stars", title: "Setup assistant", muted: true, selected: false) { onRunSetup() }
                 SidebarItem(icon: "arrow.counterclockwise", title: "Reset", selected: page == .reset) { page = .reset }
@@ -131,6 +133,8 @@ struct SettingsSheet: View {
             BackgroundPage()
         case .defaults:
             DefaultsPage(brain: brain)
+        case .account:
+            AccountPage(brain: brain)
         case .addProvider:
             AddProviderPage(brain: brain) { id in page = .provider(id) }
         case .addMcp:
