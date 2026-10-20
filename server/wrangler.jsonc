@@ -1,0 +1,24 @@
+// Local Bot accounts. To run your own: create a D1 database and a GitHub
+// OAuth app, put their ids here and the secrets with `wrangler secret put`
+// (see README.md).
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "localbot-accounts",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  // Better Auth uses AsyncLocalStorage.
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "localbot-accounts",
+      "database_id": "4cdf43fe-94eb-4faf-9a45-8637ebd6df3b"
+    }
+  ],
+  "vars": {
+    // This Worker's public address: GitHub returns to <it>/api/auth/callback/github.
+    "BETTER_AUTH_URL": "https://localbot-accounts.patrick-mns.workers.dev"
+  }
+  // Secrets (wrangler secret put): BETTER_AUTH_SECRET, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET
+}

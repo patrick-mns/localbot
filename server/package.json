@@ -1,0 +1,23 @@
+{
+  "name": "@local-bot/server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Bot accounts: sign in with GitHub (Better Auth on Cloudflare Workers + D1). Optional; the app works without it.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate": "wrangler d1 migrations apply localbot-accounts --remote",
+    "migrate:local": "wrangler d1 migrations apply localbot-accounts --local",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "better-auth": "^1.7.12",
+    "hono": "^4.13.13"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261019.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.151.3"
+  }
+}
