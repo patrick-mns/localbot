@@ -43,9 +43,23 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate {
         Task { @MainActor in self.available = version }
     }
 
-    /// The menu bar keeps ⌘Q from quitting; an update must really quit.
+    /// Sparkle's "Install and Relaunch" asks the app to quit, and AppKit
+    /// refuses while a sheet (Settings, where "Check for updates" is) is open,
+    /// so the install waited forever. Sparkle asks here first: close the
+    /// sheets, allow quitting past the menu bar (which otherwise only hides
+    /// the window), then let it go on.
+    nonisolated func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,
+                             untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
+        DispatchQueue.main.async {
+            MenuBar.quitting = true
+            MenuBar.closeSheets(then: installHandler)
+        }
+        return true
+    }
+
+    /// Updates installed on quit relaunch without asking first.
     nonisolated func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
-        Task { @MainActor in MenuBar.quitting = true }
+        DispatchQueue.main.async { MenuBar.quitting = true }
     }
 
     nonisolated func updaterDidNotFindUpdate(_ updater: SPUUpdater) {

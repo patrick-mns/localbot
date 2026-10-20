@@ -54,13 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    /// AppKit refuses to quit while a sheet (Settings, a bot editor…) is open,
-    /// which also left Sparkle's "Install and Relaunch" waiting forever. Close
-    /// the sheets and quit.
+    /// AppKit doesn't get here while a sheet is open (it refuses to quit before
+    /// asking), so whatever must really quit closes the sheets first: see
+    /// `MenuBar.closeSheets`.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        for window in sender.windows {
-            while let sheet = window.attachedSheet { window.endSheet(sheet) }
-        }
         // In the menu bar, ⌘Q just closes the window; Quit in its menu, an
         // update or logging out really quits.
         if MenuBar.keepsRunning {
