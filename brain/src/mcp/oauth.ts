@@ -32,10 +32,12 @@ interface AuthServer {
 
 /**
  * Local Bot's client metadata document (assets/oauth-client.json, served from
- * the repo): its URL is the client id for servers without registration. Its
- * redirect URIs are fixed, so the loopback uses one of these ports.
+ * the repo through jsDelivr, which sends it as JSON; GitHub's raw files are
+ * plain text and get refused): its URL is the client id for servers without
+ * registration. Its redirect URIs are fixed, so the loopback uses one of these
+ * ports.
  */
-const CLIENT_METADATA_URL = "https://raw.githubusercontent.com/patrick-mns/localbot/elevenlabs-connector/assets/oauth-client.json";
+const CLIENT_METADATA_URL = "https://cdn.jsdelivr.net/gh/patrick-mns/localbot@elevenlabs-connector/assets/oauth-client.json";
 const METADATA_PORTS = [47821, 47822, 47823];
 
 const UA = { "user-agent": "LocalBot (MCP client)" };
