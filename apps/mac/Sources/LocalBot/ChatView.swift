@@ -11,6 +11,9 @@ struct ChatView: View {
     @State private var dropping = false
     /// Whether the end of the chat is on screen; new text follows only then.
     @State private var atBottom = true
+    /// The first scroll to the end has landed; until then, nothing else scrolls
+    /// (or loads older messages, which would pin the chat to the top).
+    @State private var settled = false
     @State private var tab: Tab = .chat
     @FocusState private var focused: Bool
 
@@ -90,7 +93,7 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     // Older messages load as you reach the top, keeping your place.
-                    if brain.olderMessages.contains(bot.id) {
+                    if brain.olderMessages.contains(bot.id) && settled {
                         ProgressView().controlSize(.small).frame(maxWidth: .infinity)
                             .onAppear {
                                 let anchor = messages.first?.id
@@ -126,9 +129,19 @@ struct ChatView: View {
                 if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
             }
             .onChange(of: messages.count) {
-                if atBottom || messages.last?.role == "user" { proxy.scrollTo("bottom", anchor: .bottom) }
+                if !settled || atBottom || messages.last?.role == "user" { proxy.scrollTo("bottom", anchor: .bottom) }
             }
-            .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+            // Opening a chat: the lazy list measures its rows over a few passes,
+            // so one scroll to the end can land short. Repeat until it sticks.
+            .task(id: bot.id) {
+                settled = false
+                for delay in [0, 60, 200, 500] {
+                    try? await Task.sleep(for: .milliseconds(delay))
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+                settled = true
+            }
             .overlay(alignment: .bottom) {
                 if !atBottom && !messages.isEmpty {
                     ScrollToBottomButton {
