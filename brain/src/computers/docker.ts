@@ -1,11 +1,12 @@
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statfsSync, writeFileSync } from "node:fs";
+import { existsSync, statfsSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { DockerCuaHands } from "../hands/docker-cua.ts";
+import { vncPassword } from "./vnc-password.ts";
 import type { Computer, ComputerProvider, SetupProgress } from "./types.ts";
 
 const run = promisify(execFile);
@@ -220,14 +221,8 @@ export class DockerProvider implements ComputerProvider {
       .catch((err) => console.error("[brain] driver upgrade failed:", err.message));
   }
 
-  /** VNC password, generated once and kept in ~/.local-bot (0600). */
   private password() {
-    const file = join(this.home, "vnc-password");
-    if (!existsSync(file)) {
-      mkdirSync(this.home, { recursive: true });
-      writeFileSync(file, randomBytes(8).toString("hex"), { mode: 0o600 });
-    }
-    return readFileSync(file, "utf8").trim();
+    return vncPassword(this.home);
   }
 }
 
