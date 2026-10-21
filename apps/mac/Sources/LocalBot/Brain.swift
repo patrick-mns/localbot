@@ -329,6 +329,8 @@ final class Brain: ObservableObject {
         env["PATH"] = ["/usr/local/bin", "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin",
                        env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"].joined(separator: ":")
         env["NODE_NO_WARNINGS"] = "1"
+        // Linux devices without Docker (macOS 26): the device runtime inside the app.
+        if let runtime = Brain.deviceRuntimeURL { env["LOCALBOT_RUNTIME"] = runtime.path }
         p.environment = env
 
         let inPipe = Pipe(), outPipe = Pipe()
@@ -482,7 +484,15 @@ final class Brain: ObservableObject {
 
     /// Returns the new device id, or nil (error in `lastError`).
     /// What a Linux device needs on this Mac. Mirrors DockerProvider.requirements.
+    /// localbot-runtime in Contents/Helpers, when this build ships it.
+    static var deviceRuntimeURL: URL? {
+        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/localbot-runtime")
+        return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+    }
+
     struct Requirements: Decodable, Equatable {
+        /// "apple": Local Bot runs Linux devices itself (no Docker); "docker".
+        let engine: String?
         let docker: String        // running | stopped | missing
         let imageReady: Bool
         let freeGB: Double?
