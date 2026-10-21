@@ -28,6 +28,10 @@ final class Server: @unchecked Sendable {
     }
 
     func listen() throws {
+        // sun_path holds 104 bytes; a longer path would be silently cut.
+        guard path.utf8.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else {
+            throw RuntimeError("Socket path too long (\(path.utf8.count) bytes): \(path)")
+        }
         try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         unlink(path)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)

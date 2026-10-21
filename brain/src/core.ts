@@ -6,6 +6,7 @@ import { Bots } from "./bots/bots.ts";
 import { Conversations } from "./chat/conversations.ts";
 import { addProvider, exportProvider, findProvider, initProviders, provider, providerStatus, removeProvider, resetProviders, setDefault, settings, testProvider, updateProvider } from "./chat/providers.ts";
 import { DockerProvider } from "./computers/docker.ts";
+import { AppleProvider } from "./computers/apple.ts";
 import { LumeProvider } from "./computers/lume.ts";
 import { RailwayProvider } from "./computers/railway.ts";
 import { RemoteProvider } from "./computers/remote.ts";
@@ -28,10 +29,22 @@ import type { ComputerProvider } from "./computers/types.ts";
 /** macOS VMs (Lume) aren't part of the first release yet; LOCALBOT_EXPERIMENTAL_MACOS=1 turns them on. */
 const macOSDevices = process.env.LOCALBOT_EXPERIMENTAL_MACOS === "1";
 const docker = new DockerProvider();
+/** Linux devices without Docker (macOS 26, Apple silicon): Local Bot's own runtime. */
+const apple = new AppleProvider();
 const lume = macOSDevices ? new LumeProvider() : null;
 const railway = new RailwayProvider();
 const remoteDevices = new RemoteProvider();
-const computerProviders: ComputerProvider[] = [docker, ...(lume ? [lume] : []), railway, remoteDevices];
+const computerProviders: ComputerProvider[] = [apple, docker, ...(lume ? [lume] : []), railway, remoteDevices];
+
+/**
+ * Which engine runs a new Linux desktop: Local Bot's runtime where it can
+ * (no Docker needed), else Docker. "docker" is what older apps ask for.
+ */
+async function linuxProvider(kind: string) {
+  if (kind !== "linux" && kind !== "docker") return null;
+  if (await apple.available()) return kind === "docker" && (await docker.available()) ? docker : apple;
+  return docker;
+}
 
 /** Every event for the shell; each transport subscribes to "event". */
 export const events = new EventEmitter();
@@ -223,9 +236,11 @@ export const methods: Record<string, Handler> = {
   },
   /** What kinds of device can be added on this host (and what is coming). */
   "computers.kinds": async () => {
-    const [dockerUp, lumeUp] = await Promise.all([docker.available(), lume?.available() ?? false]);
+    const [dockerUp, lumeUp, appleUp] = await Promise.all([docker.available(), lume?.available() ?? false, apple.available()]);
     return [
-      { id: "docker", label: "Linux desktop", detail: "Debian + XFCE + Firefox in a container. Starts in seconds, ~1 GB.", available: dockerUp, reason: dockerUp ? null : "Docker isn’t running" },
+      appleUp
+        ? { id: "linux", label: "Linux desktop", detail: "Debian + XFCE + Firefox, built into Local Bot (no Docker). Starts in seconds, ~1 GB.", available: true, reason: null }
+        : { id: "docker", label: "Linux desktop", detail: "Debian + XFCE + Firefox in a container. Starts in seconds, ~1 GB.", available: dockerUp, reason: dockerUp ? null : "Docker isn’t running" },
       { id: "lume", label: "macOS virtual machine", detail: "Full macOS via Apple Virtualization. ~17 GB download, 8 GB RAM; up to 2 running per Mac.", available: lumeUp, reason: lumeUp ? null : "Coming soon" },
       {
         id: "railway", label: "Linux in the cloud", detail: "The same desktop on your Railway account. Keeps working while your Mac sleeps; billed by Railway.",
@@ -243,9 +258,16 @@ export const methods: Record<string, Handler> = {
     ];
   },
   /** What a Linux device needs on this Mac (Docker, the image, disk). */
-  "computers.requirements": () => docker.requirements(),
+  /**
+   * With Local Bot's runtime there's no Docker to install: `engine` says which
+   * one runs new devices, and `docker` reads "running" so older apps don't ask.
+   */
+  "computers.requirements": async () =>
+    (await apple.available())
+      ? { engine: "apple", docker: "running", ...(await apple.requirements()) }
+      : { engine: "docker", ...(await docker.requirements()) },
   "computers.create": async ({ kind, name, options, setupId }) => {
-    const p = computerProviders.find((x) => x.name === kind);
+    const p = (await linuxProvider(String(kind))) ?? computerProviders.find((x) => x.name === kind);
     if (!p?.create) throw new Error(`Can’t create ${kind} devices yet`);
     if (!String(name ?? "").trim()) throw new Error("The device needs a name");
     // The app follows the steps (download, start, controls, screen) by setupId.
