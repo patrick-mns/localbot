@@ -6,3 +6,5 @@ node_modules/
 secrets.json
 dist/
 .build-cache/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
