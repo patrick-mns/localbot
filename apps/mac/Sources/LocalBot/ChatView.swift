@@ -55,6 +55,7 @@ struct ChatView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
+            ColumnLeadingChrome()
             AnimatedFace(face: bot.face, size: 26, working: thinking, seed: bot.id,
                          failed: messages.last?.error != nil)
             VStack(alignment: .leading, spacing: 1) {
@@ -68,9 +69,10 @@ struct ChatView: View {
                     .keyboardShortcut(.cancelAction)
             }
             BotMenu(bot: bot)
+            ComputerToggle()
             PanelToggle(side: .trailing)
         }
-        .padding(.leading, 16).padding(.trailing, 12)
+        .padding(.leading, model.columnHeaderInset).padding(.trailing, 12)
         .frame(height: titleBarHeight)
         .background(Theme.sidebar)
         .dragsWindow()
