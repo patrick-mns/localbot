@@ -15,6 +15,7 @@ let package = Package(
             name: "LocalBotRuntime",
             dependencies: [
                 .product(name: "Containerization", package: "containerization"),
+                .product(name: "ContainerizationExtras", package: "containerization"),
             ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
