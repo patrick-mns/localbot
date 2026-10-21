@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["nsis", "msi"],
+    "resources": {
+      "resources/node.exe": "node.exe",
+      "resources/brain/brain.mjs": "brain/brain.mjs"
+    },
+    "publisher": "Local Bot",
+    "homepage": "https://github.com/patrick-mns/localbot",
+    "shortDescription": "AI bots that use their own computer",
+    "windows": {
+      "nsis": { "installMode": "currentUser" },
+      "webviewInstallMode": { "type": "downloadBootstrapper" }
+    }
+  }
+}
