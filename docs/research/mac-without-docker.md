@@ -98,6 +98,33 @@ Next:
    `.pkg`) and move to embedded Containerization (no install) after.
 2. Onboarding: on macOS 26 + Apple silicon, offer this instead of Docker.
 
+## Spike: embedded Containerization (apps/runtime), no CLI
+
+`apps/runtime` (Swift, macOS 26, `apple/containerization` 0.52.1, signed with
+`com.apple.security.virtualization` only) runs the device by itself:
+
+| Step | Result |
+|---|---|
+| Image pull + unpack to a 16 GB ext4 rootfs (debug build) | ~2.5 min the first time |
+| Recreate from the existing rootfs (a restart) | 0 s |
+| Boot + supervisord, exec `whoami` as `cua` | seconds; `uid=1000(cua)` |
+| noVNC at `http://<IP>:6901` | 200, "Connected to lb-spike:1 (cua)", XFCE up |
+
+What the CLI did for us and the framework doesn't:
+- **/etc/hosts**: without it TigerVNC exits at start (supervisord gives up).
+  Set `config.hosts = Hosts.default` plus `<IP> <hostname>`.
+- **/dev/shm**: 64 MB by default; replace the tmpfs with `size=1g`
+  (docker `--shm-size=1g`).
+- **Memory/CPUs**: set them (4 GB, 4 CPUs).
+- The process comes from the image config (supervisord as root, its env),
+  plus `VNC_PW`.
+- Each run gets a new subnet/IP from `VmnetNetwork`; the IP is known when the
+  container is configured (`config.interfaces[0].ipv4Address`).
+- A VM lives in the process that started it: the runtime must be a
+  long-running helper (like `container`'s API server), not a one-shot CLI.
+- Kernel: Kata's `vmlinux` (29 MB, GPL-2.0, source from kata-containers);
+  init image `ghcr.io/apple/containerization/vminit:0.52.1` is pulled once.
+
 ## Sources
 
 - Apple Containerization: https://github.com/apple/containerization
