@@ -1,0 +1,87 @@
+# Linux devices on the Mac without Docker Desktop
+
+Status: research (branch `research-no-docker`). Goal: keep the same device —
+the `trycua/xfce-cua` image with Cua Driver inside — but stop asking users to
+install Docker Desktop.
+
+## What the brain needs from a container runtime
+
+`brain/src/computers/docker.ts` and `brain/src/hands/docker-cua.ts` use a
+small part of Docker:
+
+| Need | Docker today |
+|---|---|
+| Get the image (once, ~1–2 GB) | `docker pull trycua/xfce-cua`, `docker image inspect` |
+| Create a device | `docker run -d --name … -p 127.0.0.1:<port>:6901 -e VNC_PW=… --shm-size=1g --label …` |
+| List / start / stop / remove | `docker ps -a --filter label=…`, `start`, `stop`, `rm -f` |
+| Hands (Cua Driver), shell, files | `docker exec [-d] -u cua -e DISPLAY=:1 <name> …` |
+| Health | `docker info` |
+
+The screen is noVNC on port 6901 inside the container; the app only needs to
+reach that port from the Mac. `trycua/xfce-cua:latest` is multi-arch and has
+a native **linux/arm64** build, so Apple silicon runs it without emulation.
+
+## Options
+
+| | Apple Containerization (embedded) | Apple `container` CLI | Lima (+ containerd) | Lume Linux VM |
+|---|---|---|---|---|
+| Runs the same OCI image | Yes | Yes | Yes (`nerdctl`) | No: a whole Linux VM we'd build and host |
+| User installs | Nothing (inside Local Bot) | A signed `.pkg` (admin) | Nothing if bundled (~100 MB) | Nothing (Lume is ours already) |
+| Isolation | One lightweight VM per device | Same | One VM, devices are containers in it | One VM per device |
+| Reaching the screen | Each container gets its own IP from the Mac | Own IP, or `-p 127.0.0.1:…` | Port forwards through the VM | VM IP |
+| Requirements | Apple silicon, **macOS 26** | Apple silicon, macOS 26 | macOS 13+, Intel too | Apple silicon |
+| Boot / overhead | Sub-second VM, only the container | Same | Full Ubuntu VM + containerd | Full distro boot |
+| License | Apache-2.0 | Apache-2.0 | Apache-2.0 | MIT |
+| Work for us | Swift helper (pull, rootfs, run, exec) + bundle a kernel | Mostly swap `docker` → `container` in the brain | Bundle limactl + template; `nerdctl` is docker-compatible | Build/publish a disk image, VNC, guest agent |
+
+Notes:
+- **Apple Containerization** (`apple/containerization`) is the Swift package
+  under Apple's `container` CLI: OCI image pull, ext4 root filesystems,
+  `LinuxContainer` (one VM per container via Virtualization.framework),
+  processes inside it (`LinuxProcess`, `vminitd`), a dedicated IP per
+  container, Rosetta for amd64. It needs a Linux kernel with VirtIO built in
+  (Kata's `vmlinux.container` or the one the repo builds) that we'd ship
+  inside the app. Embedding without installing the CLI looks supported (the
+  Virtualization backend "needs no extra binaries") but must be proven.
+- **Apple `container` 1.0** (June 2026): `container run -d -p 127.0.0.1:8080:8000 …`,
+  `container exec`, `container ls`/`inspect` (shows the IP). Its services are
+  started with `container system start`; the usual install is a `.pkg` in
+  `/usr/local`, which needs an admin password. Whether its binaries can run
+  from inside our app bundle is open.
+- **Lima** (already on this Mac via Homebrew): VZ VMs with containerd and
+  `nerdctl`, which takes Docker's flags. Works on Intel and macOS 13+, at the
+  cost of a full VM (a few hundred MB more and slower start).
+- **Lume** creates Linux VMs (`lume create --os linux`), but not from an OCI
+  image: we'd have to build, host and update our own Linux disk image with
+  XFCE, noVNC and Cua Driver. More work and a second image to maintain.
+
+## Recommendation
+
+1. **Default on macOS 26 + Apple silicon: Apple Containerization, embedded.**
+   A small Swift helper shipped in the app (`localbot-runtime`) with the same
+   verbs the brain uses today: `pull`, `run`, `exec`, `ls`, `start`, `stop`,
+   `rm`. The brain picks it instead of `docker` through one runtime
+   interface; the device, the image, noVNC and Cua Driver stay the same. No
+   install, no admin password, a VM per device.
+2. **Fallback: Docker** (what we have) for Intel Macs and macOS < 26. Lima is
+   the option if we later want "no Docker" there too.
+
+## Proof of concept (next)
+
+1. Install Apple `container` 1.0 (needs your admin password) and run the
+   device by hand:
+   `container run -d --name lb-poc -e VNC_PW=… --shm-size=1g trycua/xfce-cua`
+   — check the desktop on `http://<container IP>:6901`, `container exec -u cua`
+   with `DISPLAY=:1`, and Cua Driver's install and a click. This answers
+   "does the image work outside Docker" before writing Swift.
+2. If it does: the `localbot-runtime` helper on Containerization (kernel +
+   init image bundled), a `ContainerRuntime` interface in the brain with
+   Docker and Apple backends, and onboarding that skips Docker on macOS 26.
+
+## Sources
+
+- Apple Containerization: https://github.com/apple/containerization
+- Apple container networking (publish, per-container IP): https://github.com/apple/container/blob/main/docs/networking.md
+- Apple container 1.0: https://cloudnativenow.com/features/apple-ships-stable-1-0-of-its-native-container-tool-for-macos/
+- Lima VZ: https://lima-vm.io/docs/config/vmtype/
+- Lume: https://github.com/trycua/cua/tree/main/libs/lume
