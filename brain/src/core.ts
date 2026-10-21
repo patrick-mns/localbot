@@ -237,10 +237,19 @@ export const methods: Record<string, Handler> = {
   /** What kinds of device can be added on this host (and what is coming). */
   "computers.kinds": async () => {
     const [dockerUp, lumeUp, appleUp] = await Promise.all([docker.available(), lume?.available() ?? false, apple.available()]);
+    // Built in first when this Mac can run it; Docker stays an option for
+    // whoever has it installed (it isn't offered to install otherwise).
+    const dockerInstalled = dockerUp || (appleUp && (await docker.requirements()).docker !== "missing");
+    const linux = appleUp
+      ? [
+          { id: "linux", label: "Linux desktop", detail: "Debian + XFCE + Firefox, built into Local Bot (no Docker). Starts in seconds, ~1 GB.", available: true, reason: null },
+          ...(dockerInstalled
+            ? [{ id: "docker", label: "Linux in Docker", detail: "The same desktop in a Docker container, if you’d rather use your Docker.", available: dockerUp, reason: dockerUp ? null : "Docker isn’t running" }]
+            : []),
+        ]
+      : [{ id: "docker", label: "Linux desktop", detail: "Debian + XFCE + Firefox in a container. Starts in seconds, ~1 GB.", available: dockerUp, reason: dockerUp ? null : "Docker isn’t running" }];
     return [
-      appleUp
-        ? { id: "linux", label: "Linux desktop", detail: "Debian + XFCE + Firefox, built into Local Bot (no Docker). Starts in seconds, ~1 GB.", available: true, reason: null }
-        : { id: "docker", label: "Linux desktop", detail: "Debian + XFCE + Firefox in a container. Starts in seconds, ~1 GB.", available: dockerUp, reason: dockerUp ? null : "Docker isn’t running" },
+      ...linux,
       { id: "lume", label: "macOS virtual machine", detail: "Full macOS via Apple Virtualization. ~17 GB download, 8 GB RAM; up to 2 running per Mac.", available: lumeUp, reason: lumeUp ? null : "Coming soon" },
       {
         id: "railway", label: "Linux in the cloud", detail: "The same desktop on your Railway account. Keeps working while your Mac sleeps; billed by Railway.",
