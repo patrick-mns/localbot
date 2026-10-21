@@ -80,7 +80,8 @@ struct StageHeader<Actions: View>: View {
     }
 }
 
-/// Shows or hides the sidebar (leading) or the chat column (trailing).
+/// Shows or hides the sidebar (leading) or the chat column (trailing). The
+/// chat and the computer are never both hidden: hiding one shows the other.
 struct PanelToggle: View {
     @EnvironmentObject private var model: AppModel
     let side: HorizontalEdge
@@ -89,9 +90,45 @@ struct PanelToggle: View {
         ToolbarButton(systemImage: side == .leading ? "sidebar.left" : "sidebar.right",
                    help: side == .leading ? (model.showSidebar ? "Hide sidebar" : "Show sidebar")
                                           : (model.showChat ? "Hide chat" : "Show chat")) {
-            if side == .leading { model.showSidebar.toggle() } else { model.showChat.toggle() }
+            if side == .leading {
+                model.showSidebar.toggle()
+            } else {
+                model.showChat.toggle()
+                if !model.showChat { model.showComputer = true }
+            }
         }
     }
+}
+
+/// Shows or hides the computer (the device's screen); the chat fills the window.
+struct ComputerToggle: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        ToolbarButton(systemImage: "display", help: model.showComputer ? "Hide computer" : "Show computer") {
+            model.showComputer.toggle()
+            if !model.showComputer { model.showChat = true }
+        }
+    }
+}
+
+/// With the computer hidden, the right column reaches the window's left edge
+/// when the sidebar is hidden too: it then takes the sidebar toggle and leaves
+/// room for the traffic lights.
+struct ColumnLeadingChrome: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        if !model.showComputer && !model.showSidebar {
+            PanelToggle(side: .leading)
+            ToolbarButton(systemImage: "plus", help: "New bot") { model.sheet = .newBot }
+        }
+    }
+}
+
+extension AppModel {
+    /// Leading padding of a right-column header (see ColumnLeadingChrome).
+    var columnHeaderInset: CGFloat { !showComputer && !showSidebar ? sidebarToggleInset : 16 }
 }
 
 struct Screen<Content: View>: View {
@@ -224,15 +261,17 @@ struct ComputerBots: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
+                ColumnLeadingChrome()
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Bots on this device").font(.system(size: 13, weight: .semibold))
                     Text(bots.isEmpty ? "None yet" : "\(bots.count) with access")
                         .font(.system(size: 11)).foregroundStyle(Theme.secondary)
                 }
                 Spacer()
+                ComputerToggle()
                 PanelToggle(side: .trailing)
             }
-            .padding(.leading, 16).padding(.trailing, 12)
+            .padding(.leading, model.columnHeaderInset).padding(.trailing, 12)
             .frame(height: titleBarHeight)
             .dragsWindow()
 
