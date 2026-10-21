@@ -66,17 +66,37 @@ Notes:
 2. **Fallback: Docker** (what we have) for Intel Macs and macOS < 26. Lima is
    the option if we later want "no Docker" there too.
 
-## Proof of concept (next)
+## Proof of concept: done (Apple `container` 1.6.0, macOS 26.5, M-series)
 
-1. Install Apple `container` 1.0 (needs your admin password) and run the
-   device by hand:
-   `container run -d --name lb-poc -e VNC_PW=… --shm-size=1g trycua/xfce-cua`
-   — check the desktop on `http://<container IP>:6901`, `container exec -u cua`
-   with `DISPLAY=:1`, and Cua Driver's install and a click. This answers
-   "does the image work outside Docker" before writing Swift.
-2. If it does: the `localbot-runtime` helper on Containerization (kernel +
-   init image bundled), a `ContainerRuntime` interface in the brain with
-   Docker and Apple backends, and onboarding that skips Docker on macOS 26.
+The device runs outside Docker with no change to the image:
+
+| Step | Result |
+|---|---|
+| `container image pull trycua/xfce-cua` | 1.17 GB, linux/arm64, 53 s |
+| `container run -d --name lb-poc -m 4G -c 4 -e VNC_PW=… --shm-size=1g -l … trycua/xfce-cua` | running in 11 s (first start) |
+| noVNC at `http://<container IP>:6901/vnc_lite.html` | 200, XFCE desktop up |
+| `container exec -u cua -e DISPLAY=:1 …` | works (as in `docker exec`) |
+| Cua Driver install (`cua.ai/driver/install.sh`) | 0.37.0 in 5 s; `serve` running |
+| `cua-driver call get_desktop_state` (screenshot) | 1280×900 PNG |
+| `cua-driver call click` on "Applications" | menu opened |
+| `container stop` / `start` | 2 s / 1 s; installed driver kept |
+
+Findings:
+- Every flag the brain passes to `docker run` / `exec` exists with the same
+  name (`-d --name -p -e -l --shm-size`, `exec -d -u -e`). Default memory is
+  small: pass `-m 4G -c 4`.
+- `-p 127.0.0.1:6950:6901` listens on the Mac but resets connections (1.6.0);
+  the container's own IP works and is Apple's recommended path.
+- **The IP changes on every start** (`.2` → `.3`): read it from
+  `container ls --format json` (`status.networks[0].ipv4Address`) each time.
+- `container system start` downloads Kata's kernel (664 MB) on first run.
+
+Next:
+1. Brain: a `ContainerRuntime` interface (Docker / Apple) under
+   `computers/docker.ts` and `hands/docker-cua.ts`; the display URL from the
+   container IP. Could start with the `container` CLI (fast to ship, needs the
+   `.pkg`) and move to embedded Containerization (no install) after.
+2. Onboarding: on macOS 26 + Apple silicon, offer this instead of Docker.
 
 ## Sources
 
