@@ -1,7 +1,8 @@
 import { createInterface } from "node:readline";
 import { connect, createServer, type Socket } from "node:net";
 import { chmodSync, mkdirSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
+import { createHash } from "node:crypto";
+import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 
@@ -18,7 +19,11 @@ import type { Readable } from "node:stream";
  * the app's own brain runs, taking over when the app quits.
  */
 const HOME = process.env.LOCALBOT_HOME ?? join(homedir(), ".local-bot");
-const SOCKET = join(HOME, "brain.sock");
+/** Windows has no Unix sockets in the data folder: a named pipe per data folder. */
+const WINDOWS = platform() === "win32";
+const SOCKET = WINDOWS
+  ? `\\\\.\\pipe\\localbot-brain-${createHash("sha256").update(HOME.toLowerCase()).digest("hex").slice(0, 16)}`
+  : join(HOME, "brain.sock");
 const service = process.argv.includes("--service");
 /** How often a waiting service checks whether the app's brain is gone. */
 const TAKEOVER_MS = Number(process.env.LOCALBOT_TAKEOVER_MS ?? 15_000);
@@ -93,14 +98,14 @@ async function own() {
   }
 
   mkdirSync(HOME, { recursive: true });
-  try { unlinkSync(SOCKET); } catch {}
+  if (!WINDOWS) try { unlinkSync(SOCKET); } catch {}
   const server = createServer((sock) => {
     sock.on("error", () => {});
     serve(sock, (line) => { if (!sock.destroyed) sock.write(line); }, () => sock.destroy());
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(SOCKET, () => { chmodSync(SOCKET, 0o600); resolve(); });
+    server.listen(SOCKET, () => { if (!WINDOWS) chmodSync(SOCKET, 0o600); resolve(); });
   });
 
   if (!service) {
@@ -108,7 +113,7 @@ async function own() {
     // background service (if any) takes over.
     serve(process.stdin, (line) => process.stdout.write(line), () => {
       server.close();
-      try { unlinkSync(SOCKET); } catch {}
+      if (!WINDOWS) try { unlinkSync(SOCKET); } catch {}
       process.exit(0);
     });
   }
