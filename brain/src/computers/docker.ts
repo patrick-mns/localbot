@@ -10,6 +10,8 @@ import type { Computer, ComputerProvider, SetupProgress } from "./types.ts";
 
 const run = promisify(execFile);
 
+/** Where Docker Desktop installs itself (macOS, Windows). */
+const DOCKER_APPS = ["/Applications/Docker.app", "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe"];
 const IMAGE = "trycua/xfce-cua:latest";
 const LABEL = "localbot.device";
 /** The first device predates labels; keep recognizing it. */
@@ -58,7 +60,7 @@ export class DockerProvider implements ComputerProvider {
   async requirements() {
     let docker: "running" | "stopped" | "missing" = "missing";
     if (await this.available()) docker = "running";
-    else if (existsSync("/Applications/Docker.app") || (await run("sh", ["-c", "command -v docker"]).then(() => true, () => false))) docker = "stopped";
+    else if (DOCKER_APPS.some((p) => existsSync(p)) || (await run("docker", ["--version"]).then(() => true, () => false))) docker = "stopped";
     const imageReady = docker === "running" && (await run("docker", ["image", "inspect", IMAGE]).then(() => true, () => false));
     let freeGB: number | null = null;
     try {
