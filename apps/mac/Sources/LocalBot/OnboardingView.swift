@@ -320,7 +320,8 @@ struct DeviceStep: View {
                     ProgressView().controlSize(.small)
                 }
             default:
-                Label("Docker is running", systemImage: "checkmark.circle.fill")
+                Label(req.engine == "apple" ? "Ready: Linux runs inside Local Bot" : "Docker is running",
+                      systemImage: "checkmark.circle.fill")
                     .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.live)
                 Text(req.imageReady
                      ? "A Linux desktop (Debian + Firefox) starts in seconds."
@@ -340,7 +341,8 @@ struct DeviceStep: View {
         failedToStart = nil
         setupId = id
         Task {
-            if await brain.createDevice(kind: "docker", name: "Linux", setupId: id) == nil {
+            // "linux": Local Bot's own runtime where it can (no Docker), else Docker.
+            if await brain.createDevice(kind: "linux", name: "Linux", setupId: id) == nil {
                 failedToStart = brain.lastError ?? "Couldn’t create the device"
             }
         }

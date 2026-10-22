@@ -55,6 +55,7 @@ struct ChatView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
+            ColumnLeadingChrome()
             AnimatedFace(face: bot.face, size: 26, working: thinking, seed: bot.id,
                          failed: messages.last?.error != nil)
             VStack(alignment: .leading, spacing: 1) {
@@ -68,9 +69,10 @@ struct ChatView: View {
                     .keyboardShortcut(.cancelAction)
             }
             BotMenu(bot: bot)
+            ComputerToggle()
             PanelToggle(side: .trailing)
         }
-        .padding(.leading, 16).padding(.trailing, 12)
+        .padding(.leading, model.columnHeaderInset).padding(.trailing, 12)
         .frame(height: titleBarHeight)
         .background(Theme.sidebar)
         .dragsWindow()
@@ -181,8 +183,11 @@ struct ChatView: View {
                     .disabled(!ready)
                     .onSubmit(send)
                     .padding(.vertical, 6)
-                Button(action: thinking ? stop : send) {
-                    Image(systemName: thinking ? "stop.fill" : "arrow.up")
+                // While the bot works: with something typed it sends (the bot
+                // reads it at its next step), with nothing typed it stops.
+                let stops = thinking && !canSend
+                Button(action: stops ? stop : send) {
+                    Image(systemName: stops ? "stop.fill" : "arrow.up")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(canSend || thinking ? Theme.onText : Theme.tertiary)
                         .frame(width: 28, height: 28)
@@ -190,8 +195,8 @@ struct ChatView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend && !thinking)
-                .accessibilityLabel(thinking ? "Stop" : "Send")
-                .help(thinking ? "Stop the current task" : "Send message")
+                .accessibilityLabel(stops ? "Stop" : "Send")
+                .help(stops ? "Stop the current task" : thinking ? "Send now; \(bot.name) reads it at its next step" : "Send message")
             }
             }
             .padding(.leading, 8).padding(.trailing, 8).padding(.vertical, 8)
@@ -245,7 +250,7 @@ struct ChatView: View {
     private var canSend: Bool { ready && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pending.isEmpty) }
 
     private func send() {
-        guard canSend, !thinking else { return }
+        guard canSend else { return }
         let text = draft, files = pending
         draft = ""
         pending = []
@@ -308,7 +313,12 @@ struct MessageRow: View {
                     // A teammate's request is outlined so it doesn't read as the user's own message.
                     .background(RoundedRectangle(cornerRadius: 16).fill(message.from == nil ? Theme.raised : Theme.surface))
                     .overlay(RoundedRectangle(cornerRadius: 16).stroke(message.from == nil ? Color.clear : Theme.border))
+                    .opacity(message.queued == true ? 0.6 : 1)
               }
+              }
+              if message.queued == true {
+                Label("Queued · \(bot.name) reads it at the next step", systemImage: "clock")
+                    .font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.tertiary)
               }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)

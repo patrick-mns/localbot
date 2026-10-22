@@ -5,14 +5,22 @@ import type { Hands, Screenshot } from "./types.ts";
 const run = promisify(execFile);
 
 /**
+ * Runs a command in the device as `cua` with DISPLAY=:1. Like execFile: it
+ * resolves with the output, or rejects with `stdout`, `stderr`, `code` (and
+ * `killed` when it ran out of time) on the error.
+ */
+export type DeviceExec = (args: string[], opts?: { timeout?: number; binary?: boolean }) => Promise<{ stdout: string | Buffer; stderr: string | Buffer }>;
+
+/**
  * Cua Driver inside a Linux desktop container. Every action goes to the whole
  * desktop in the foreground: nobody else uses this screen, so there is no
- * focus to protect and foreground input is the most reliable on X11.
+ * focus to protect and foreground input is the most reliable on X11. How the
+ * commands reach the container (Docker, Local Bot's runtime) is `exec`.
  */
-export class DockerCuaHands implements Hands {
+export class CuaHands implements Hands {
   private driver?: string;
 
-  constructor(private container: string, private session: string) {}
+  constructor(private run: DeviceExec, private session: string) {}
 
   describe() {
     return [
@@ -22,11 +30,7 @@ export class DockerCuaHands implements Hands {
   }
 
   private exec(args: string[], opts: { timeout?: number; binary?: boolean } = {}) {
-    return run("docker", ["exec", "-u", "cua", "-e", "DISPLAY=:1", this.container, ...args], {
-      timeout: opts.timeout ?? 60_000,
-      maxBuffer: 32 * 1024 * 1024,
-      encoding: opts.binary ? "buffer" : "utf8",
-    });
+    return this.run(args, opts);
   }
 
   /** Prefers a user-updated driver in ~/.local/bin over the one baked into the image. */
@@ -90,5 +94,16 @@ export class DockerCuaHands implements Hands {
       const output = `${err.stdout ?? ""}${err.stderr ?? ""}` || err.message;
       return { code: typeof err.code === "number" ? err.code : 1, output: err.killed ? `${output}\n(timed out)` : output };
     }
+  }
+}
+
+/** Cua Driver in a Docker container (`docker exec`). */
+export class DockerCuaHands extends CuaHands {
+  constructor(container: string, session: string) {
+    super((args, opts = {}) => run("docker", ["exec", "-u", "cua", "-e", "DISPLAY=:1", container, ...args], {
+      timeout: opts.timeout ?? 60_000,
+      maxBuffer: 32 * 1024 * 1024,
+      encoding: opts.binary ? "buffer" : "utf8",
+    }), session);
   }
 }

@@ -32,6 +32,8 @@ export interface Message {
   connect?: ConnectRequest;
   /** A note from Local Bot itself (e.g. "Notion is connected"), not the user. */
   notice?: boolean;
+  /** Sent while the bot was working; it reads it at its next step. */
+  queued?: boolean;
 }
 
 export interface ConnectRequest {
@@ -83,6 +85,8 @@ const DELEGATION_TIMEOUT_MS = 10 * 60_000;
 export class Conversations {
   private messages = new MessageStore();
   private running = new Map<string, AbortController>();
+  /** Messages sent while a bot works, waiting for its next step (oldest first). */
+  private queued = new Map<string, Message[]>();
 
   private routines?: Routines;
   private memory?: MemoryService;
@@ -132,12 +136,14 @@ export class Conversations {
 
   /** Factory reset: stops everything and drops every chat. */
   reset() {
+    this.queued.clear();
     for (const [, run] of this.running) run.abort();
     this.messages.clear();
     this.files.clearAll();
   }
 
   clear(botId: string) {
+    this.queued.delete(botId);
     this.stop(botId);
     this.messages.removeBot(botId);
     this.files.clear(botId);
@@ -149,9 +155,21 @@ export class Conversations {
     this.running.get(botId)?.abort();
   }
 
-  /** Records the user's message and runs the bot in the background; progress arrives as events. */
+  /**
+   * Records the user's message and runs the bot in the background; progress
+   * arrives as events. While the bot is working the message waits in a queue
+   * and joins the conversation at its next step, as in Claude or Cursor.
+   */
   async send(bot: Bot, text: string, files: Attachment[] = []) {
-    const { userId } = this.start(bot, text || (files.length ? "(sent files)" : ""), { files });
+    const prompt = (text || (files.length ? "(sent files)" : "")).trim();
+    if (this.running.has(bot.id)) {
+      if (!prompt) throw new Error("Empty message");
+      const user = this.add({ botId: bot.id, role: "user", text: prompt, queued: true, ...(files.length ? { files } : {}) });
+      this.emit("message", user);
+      this.queued.set(bot.id, [...(this.queued.get(bot.id) ?? []), user]);
+      return { userId: user.id, queued: true };
+    }
+    const { userId } = this.start(bot, prompt, { files });
     return { userId };
   }
 
@@ -169,12 +187,16 @@ export class Conversations {
 
     const user = this.add({ botId: bot.id, role: "user", text: prompt, ...(routine ? { routine } : {}), ...(from ? { from } : {}), ...(notice ? { notice } : {}), ...(files?.length ? { files } : {}) });
     this.emit("message", user);
+    return this.begin(bot, user, chain, !!routine);
+  }
 
+  /** Runs a turn for `user` (already in the chat). */
+  private begin(bot: Bot, user: Message, chain: string[], inRoutine: boolean) {
     const abort = new AbortController();
     this.running.set(bot.id, abort);
     this.emit("bot.status", { botId: bot.id, status: "thinking" });
 
-    const done = this.run(bot, abort.signal, chain, !!routine)
+    const done = this.run(bot, abort.signal, chain, inRoutine)
       .catch((err): RunOutcome => ({ ok: false, error: err instanceof Error ? err.message : String(err) }))
       .then((outcome) => {
         this.learn(bot, user, outcome);
@@ -183,8 +205,56 @@ export class Conversations {
       .finally(() => {
         this.running.delete(bot.id);
         this.emit("bot.status", { botId: bot.id, status: "idle" });
+        this.resumeQueued(bot.id);
       });
     return { userId: user.id, done };
+  }
+
+  /**
+   * A message that came in as the turn was ending (or was stopped) starts the
+   * next turn; it's already in the chat, so the turn just reads it.
+   */
+  private resumeQueued(botId: string) {
+    const waiting = this.queued.get(botId) ?? [];
+    this.queued.delete(botId);
+    if (!waiting.length) return;
+    const bot = this.team().find((b) => b.id === botId);
+    if (!bot) return;
+    for (const m of waiting) this.markRead(m);
+    this.begin(bot, waiting[waiting.length - 1], [bot.id], false);
+  }
+
+  /** Takes the queued messages into a running turn, in order, as user messages. */
+  private async takeQueued(bot: Bot, place: Workplace | null): Promise<ChatMessage[]> {
+    const waiting = this.queued.get(bot.id) ?? [];
+    if (!waiting.length) return [];
+    this.queued.delete(bot.id);
+    const out: ChatMessage[] = [];
+    for (const m of waiting) {
+      if (place) await this.deliverFiles(bot, place, m);
+      const fresh = this.messages.get(m.id) ?? m;
+      const content = this.userContent(bot, fresh, true);
+      const note = "[The user sent this while you were working. Take it into account from here on.]";
+      out.push({
+        role: "user",
+        content: typeof content === "string"
+          ? `${note}\n${content}`
+          : content.map((p, i) => (i === 0 && p.type === "text" ? { ...p, text: `${note}\n${p.text}` } : p)),
+      } as ChatMessage);
+      this.markRead(fresh);
+    }
+    return out;
+  }
+
+  /**
+   * The message left the queue: the bot has it now. It moves to where the bot
+   * read it, after whatever the bot was writing when it was sent.
+   */
+  private markRead(m: Message) {
+    const current = this.messages.get(m.id) ?? m;
+    if (!current.queued) return;
+    const { queued: _queued, ...rest } = current;
+    this.emit("message", this.messages.upsert(rest, true));
   }
 
   private async run(bot: Bot, signal: AbortSignal, chain: string[], inRoutine = false): Promise<RunOutcome> {
@@ -236,6 +306,8 @@ export class Conversations {
     }
 
     while (!signal.aborted) {
+      // Messages the user sent meanwhile join here, before the next step.
+      transcript.push(...(await this.takeQueued(bot, place)));
       const reply = this.draft(bot);
       let result;
       try {
@@ -259,7 +331,14 @@ export class Conversations {
       }
       this.finish(reply);
       if (reply.text.trim()) lastReply = reply.text.trim();
-      if (!result.toolCalls.length) return { ok: true, reply: lastReply };
+      if (!result.toolCalls.length) {
+        // Something new came in while it was answering: keep going with it.
+        if (this.queued.get(bot.id)?.length) {
+          if (result.text) transcript.push({ role: "assistant", content: result.text });
+          continue;
+        }
+        return { ok: true, reply: lastReply };
+      }
 
       transcript.push({
         role: "assistant",
@@ -615,9 +694,9 @@ export class Conversations {
     ].filter(Boolean).join("\n\n");
   }
 
-  /** Copies the files of the user's latest message to the device (once). */
-  private async deliverFiles(bot: Bot, place: Workplace) {
-    const last = this.history(bot.id).filter((m) => m.role === "user").at(-1);
+  /** Copies the files of a user message (the latest by default) to the device, once. */
+  private async deliverFiles(bot: Bot, place: Workplace, message?: Message) {
+    const last = message ? (this.messages.get(message.id) ?? message) : this.history(bot.id).filter((m) => m.role === "user").at(-1);
     const pending = last?.files?.filter((f) => !f.devicePath) ?? [];
     if (!last || !pending.length) return;
     const files = [...last.files!];

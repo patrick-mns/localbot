@@ -28,11 +28,13 @@ jobs:
 
   mac-app:
     name: macOS app (build)
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - run: swift --version
       - run: swift build --package-path apps/mac
+      - name: Device runtime
+        run: swift build --package-path apps/runtime
 
   desktop-app:
     name: Windows app (build)

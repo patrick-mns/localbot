@@ -17,6 +17,10 @@ REPO="patrick-mns/localbot"
 # Sparkle installs only updates signed with the matching private key (kept in
 # the maintainer's Keychain, never on GitHub; see scripts/publish-release.sh).
 SPARKLE_KEY="$(cat "$ROOT/assets/sparkle-public-key.txt")"
+# Linux devices without Docker (macOS 26): the device runtime and the kernel
+# its VMs boot — Kata Containers' build, the one Apple's container CLI uses.
+KATA_VERSION="3.32.0"
+KERNEL_NAME="vmlinux-6.18.35-197-debug"
 
 DIST="$ROOT/dist"
 CACHE="$ROOT/.build-cache"
@@ -48,6 +52,27 @@ fi
 tar -xzf "$CACHE/$TARBALL" -C "$CACHE" "node-v$NODE_VERSION-darwin-$ARCH/bin/node"
 cp "$CACHE/node-v$NODE_VERSION-darwin-$ARCH/bin/node" "$APP/Contents/Resources/node"
 
+echo "==> Device runtime (Apple Containerization)"
+# Needs the macOS 26 SDK (Xcode 26). Without it the app ships without the
+# runtime and Linux devices use Docker, as before.
+if [ "$(xcrun --sdk macosx --show-sdk-version | cut -d. -f1)" -ge 26 ]; then
+  swift build -c release --arch "$ARCH" --package-path "$ROOT/apps/runtime"
+  RUNTIME_BIN="$(swift build -c release --arch "$ARCH" --package-path "$ROOT/apps/runtime" --show-bin-path)/LocalBotRuntime"
+  KATA="$CACHE/kata-static-$KATA_VERSION-arm64.tar.zst"
+  if [ ! -f "$CACHE/$KERNEL_NAME" ]; then
+    command -v zstd >/dev/null || { echo "zstd is needed to unpack the kernel: brew install zstd"; exit 1; }
+    [ -f "$KATA" ] || curl -fsSL -o "$KATA" \
+      "https://github.com/kata-containers/kata-containers/releases/download/$KATA_VERSION/kata-static-$KATA_VERSION-arm64.tar.zst"
+    zstd -dc "$KATA" | tar -xf - -C "$CACHE" --strip-components 5 "./opt/kata/share/kata-containers/$KERNEL_NAME"
+  fi
+  mkdir -p "$APP/Contents/Helpers" "$APP/Contents/Resources/runtime"
+  cp "$RUNTIME_BIN" "$APP/Contents/Helpers/localbot-runtime"
+  cp "$CACHE/$KERNEL_NAME" "$APP/Contents/Resources/runtime/vmlinux"
+  cp "$ROOT/apps/runtime/KERNEL-NOTICE.md" "$APP/Contents/Resources/runtime/"
+else
+  echo "    skipped: needs the macOS 26 SDK (Xcode 26)"
+fi
+
 echo "==> App bundle"
 cp "$BIN" "$APP/Contents/MacOS/LocalBot"
 mkdir -p "$APP/Contents/Frameworks"
@@ -73,6 +98,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>SUFeedURL</key><string>https://github.com/$REPO/releases/latest/download/appcast.xml</string>
   <key>SUPublicEDKey</key><string>$SPARKLE_KEY</string>
   <key>SUEnableAutomaticChecks</key><true/>
+  <key>NSAppTransportSecurity</key>
+  <dict><key>NSAllowsLocalNetworking</key><true/></dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Local Bot shows your Linux devices’ screens, which run in small virtual machines on this Mac.</string>
 </dict>
 </plist>
 PLIST
@@ -84,6 +113,11 @@ SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
 for item in "$SPARKLE"/Versions/B/XPCServices/*.xpc "$SPARKLE/Versions/B/Autoupdate" "$SPARKLE/Versions/B/Updater.app" "$SPARKLE"; do
   codesign --force --sign - --timestamp=none --options runtime "$item"
 done
+if [ -f "$APP/Contents/Helpers/localbot-runtime" ]; then
+  # Running VMs takes Apple's virtualization entitlement.
+  codesign --force --sign - --entitlements "$ROOT/apps/runtime/LocalBotRuntime.entitlements" --options runtime \
+    --timestamp=none "$APP/Contents/Helpers/localbot-runtime"
+fi
 codesign --force --sign - --entitlements "$ROOT/apps/mac/LocalBot.entitlements" --options runtime \
   --timestamp=none "$APP/Contents/MacOS/LocalBot"
 codesign --force --sign - --timestamp=none "$APP"

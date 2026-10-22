@@ -116,6 +116,8 @@ final class Brain: ObservableObject {
         var connect: ConnectRequest?
         /// Posted by Local Bot itself (an app got connected), not the user.
         var notice: Bool?
+        /// Sent while the bot was working; it reads it at its next step.
+        var queued: Bool?
 
         struct ConnectRequest: Decodable, Hashable {
             let connector: String
@@ -329,6 +331,8 @@ final class Brain: ObservableObject {
         env["PATH"] = ["/usr/local/bin", "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin",
                        env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"].joined(separator: ":")
         env["NODE_NO_WARNINGS"] = "1"
+        // Linux devices without Docker (macOS 26): the device runtime inside the app.
+        if let runtime = Brain.deviceRuntimeURL { env["LOCALBOT_RUNTIME"] = runtime.path }
         p.environment = env
 
         let inPipe = Pipe(), outPipe = Pipe()
@@ -482,7 +486,15 @@ final class Brain: ObservableObject {
 
     /// Returns the new device id, or nil (error in `lastError`).
     /// What a Linux device needs on this Mac. Mirrors DockerProvider.requirements.
+    /// localbot-runtime in Contents/Helpers, when this build ships it.
+    static var deviceRuntimeURL: URL? {
+        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/localbot-runtime")
+        return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+    }
+
     struct Requirements: Decodable, Equatable {
+        /// "apple": Local Bot runs Linux devices itself (no Docker); "docker".
+        let engine: String?
         let docker: String        // running | stopped | missing
         let imageReady: Bool
         let freeGB: Double?
@@ -1073,7 +1085,11 @@ final class Brain: ObservableObject {
                 messages[msg.botId] = list
                 return
             }
-            if let i = list.firstIndex(where: { $0.id == msg.id }) {
+            if let i = list.firstIndex(where: { $0.id == msg.id }), list[i].queued == true, msg.queued != true {
+                // A message sent mid-task, now read: it moves to where the bot read it.
+                list.remove(at: i)
+                list.append(msg)
+            } else if let i = list.firstIndex(where: { $0.id == msg.id }) {
                 // The final message carries the full text; keep streamed text if it's empty.
                 // Cards (connect, files) have no text but do change (connected, dismissed).
                 if !msg.text.isEmpty || msg.error != nil || msg.connect != nil || msg.files != nil { list[i] = msg }

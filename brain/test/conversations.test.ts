@@ -284,3 +284,73 @@ test("files the user sends reach the device and the model sees images and text",
   assert.match(parts[0].text, /--- notes\.txt ---\ncomprar pão/);
   assert.ok(parts.some((p) => p.type === "image_url" && p.image_url.url.startsWith("data:image/png;base64,")));
 });
+
+/** A model whose first step waits until `release()`; later steps follow `script`. */
+function gated(fake: FakeProvider, first: Step, script: Step[]) {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const seen: string[] = [];
+  let n = 0;
+  fake.chat = async (req) => {
+    seen.push(JSON.stringify(req.messages));
+    const step = n++ === 0 ? (await gate, first) : script.shift() ?? { text: "(end)" };
+    const turn = typeof step === "function" ? step(req) : step;
+    if (turn.text) req.onDelta(turn.text);
+    return { text: turn.text ?? "", toolCalls: (turn.tools ?? []).map((t, i) => ({ id: `c${n}-${i}`, name: t.name, arguments: JSON.stringify(t.args) })) };
+  };
+  return { release, seen };
+}
+
+test("a message sent while the bot works joins at its next step", async () => {
+  const hands = new FakeHands();
+  const { conv, fakes, bots, id, events } = setup({ a: [] }, { hands });
+  const { release, seen } = gated(fakes.a, { tools: [{ name: "click", args: { x: 1, y: 2 } }] }, [{ text: "Feito, e pintei de azul." }]);
+  await conv.send(bots[0], "abre o editor");
+  await sleep(30);
+  const sent = await conv.send(bots[0], "e pinta de azul");
+  assert.equal((sent as any).queued, true);
+  assert.equal(conv.history(id.a).find((m) => m.text === "e pinta de azul")?.queued, true);
+  release();
+  await settle(conv, bots);
+  // The second step saw the new message, marked as sent mid-task.
+  assert.match(seen[1], /while you were working[^"]*\\n?e pinta de azul/);
+  assert.ok(!seen[0].includes("e pinta de azul"));
+  // It's no longer waiting, and the turn ended once.
+  assert.equal(conv.history(id.a).find((m) => m.text === "e pinta de azul")?.queued, undefined);
+  assert.equal(events.filter((e) => e.event === "bot.status" && e.data.status === "idle").length, 1);
+});
+
+test("a message sent as the bot is answering makes it keep going", async () => {
+  const { conv, fakes, bots, id } = setup({ a: [] });
+  const { release, seen } = gated(fakes.a, { text: "Pronto." }, [{ text: "Também troquei o título." }]);
+  await conv.send(bots[0], "arruma o texto");
+  await sleep(30);
+  await conv.send(bots[0], "e o título");
+  release();
+  await settle(conv, bots);
+  assert.equal(seen.length, 2);
+  assert.match(seen[1], /e o título/);
+  assert.deepEqual(conv.history(id.a).map((m) => [m.role, m.text]), [
+    ["user", "arruma o texto"], ["assistant", "Pronto."], ["user", "e o título"], ["assistant", "Também troquei o título."],
+  ]);
+});
+
+test("a message queued when the turn is stopped starts the next turn", async () => {
+  const { conv, fakes, bots, id } = setup({ a: [] });
+  let calls = 0;
+  fakes.a.chat = (req) => {
+    calls++;
+    if (calls === 1) return new Promise((_, reject) => req.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+    req.onDelta("Ok, outra coisa.");
+    return Promise.resolve({ text: "Ok, outra coisa.", toolCalls: [] });
+  };
+  await conv.send(bots[0], "tarefa longa");
+  await sleep(30);
+  await conv.send(bots[0], "esquece, faz outra coisa");
+  conv.stop(id.a);
+  await settle(conv, bots);
+  await sleep(30);
+  await settle(conv, bots);
+  assert.equal(calls, 2);
+  assert.equal(conv.history(id.a).at(-1)?.text, "Ok, outra coisa.");
+});

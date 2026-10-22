@@ -12,7 +12,8 @@ permissions:
 
 jobs:
   dmg:
-    runs-on: macos-15
+    # macOS 26 / Xcode 26: the device runtime needs its SDK.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -26,8 +27,17 @@ jobs:
       - name: Check VERSION matches the tag
         run: |
           [ "v$(cat VERSION)" = "${GITHUB_REF_NAME}" ] || { echo "VERSION is $(cat VERSION), tag is ${GITHUB_REF_NAME}"; exit 1; }
+      # The kernel the device VMs boot comes out of a 660 MB Kata package.
+      - uses: actions/cache@v4
+        with:
+          path: .build-cache/vmlinux-*
+          key: device-kernel-kata-3.32.0
       - name: Build app and DMG
         run: scripts/build-app.sh
+      - name: Check the device runtime is in the app
+        run: |
+          test -x "dist/Local Bot.app/Contents/Helpers/localbot-runtime"
+          test -f "dist/Local Bot.app/Contents/Resources/runtime/vmlinux"
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

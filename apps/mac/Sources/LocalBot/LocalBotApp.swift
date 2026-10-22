@@ -106,6 +106,8 @@ final class AppModel: ObservableObject {
     @Published var sheet: Sheet?
     @Published var showSidebar = true
     @Published var showChat = true
+    /// The device's screen (center column). Hidden, the chat takes its place.
+    @Published var showComputer = true
     /// Device waiting for the user to confirm its removal.
     @Published var removingDevice: Brain.Computer?
     /// Device being renamed, and the name being typed.
@@ -156,18 +158,28 @@ struct MainView: View {
                     .transition(.move(edge: .leading))
                 ResizeHandle(width: $sidebarWidth, range: 200...380, defaultWidth: 248, edge: .leading)
             }
-            center
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if model.showComputer {
+                center
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transition(.opacity)
+            }
             if model.showChat {
-                ResizeHandle(width: $chatWidth, range: 300...620, defaultWidth: 380, edge: .trailing)
-                trailing
-                    .frame(width: chatWidth)
-                    .transition(.move(edge: .trailing))
+                if model.showComputer {
+                    ResizeHandle(width: $chatWidth, range: 300...620, defaultWidth: 380, edge: .trailing)
+                    trailing
+                        .frame(width: chatWidth)
+                        .transition(.move(edge: .trailing))
+                } else {
+                    // Without the computer, the chat takes the whole width.
+                    trailing
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .environmentObject(model)
         .animation(.easeInOut(duration: 0.18), value: model.showSidebar)
         .animation(.easeInOut(duration: 0.18), value: model.showChat)
+        .animation(.easeInOut(duration: 0.18), value: model.showComputer)
         .background(Theme.window)
         .background(WindowChrome())
         .ignoresSafeArea(.container, edges: .top)

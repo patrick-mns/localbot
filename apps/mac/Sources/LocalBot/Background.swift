@@ -36,15 +36,17 @@ enum BackgroundService {
         guard let runtime, let executable = Bundle.main.executableURL else { return }
         let path = ["/usr/local/bin", "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin",
                     "/usr/bin", "/bin", "/usr/sbin", "/sbin"].joined(separator: ":")
+        var environment = [
+            "PATH": path,
+            "NODE_NO_WARNINGS": "1",
+            // With no app open, the service posts notifications through the app.
+            "LOCALBOT_APP_EXECUTABLE": executable.path,
+        ]
+        if let deviceRuntime = Brain.deviceRuntimeURL { environment["LOCALBOT_RUNTIME"] = deviceRuntime.path }
         let plist: [String: Any] = [
             "Label": label,
             "ProgramArguments": [runtime.node.path, runtime.brain.path, "--service"],
-            "EnvironmentVariables": [
-                "PATH": path,
-                "NODE_NO_WARNINGS": "1",
-                // With no app open, the service posts notifications through the app.
-                "LOCALBOT_APP_EXECUTABLE": executable.path,
-            ],
+            "EnvironmentVariables": environment,
             "RunAtLoad": true,
             "KeepAlive": true,
             "ProcessType": "Background",
