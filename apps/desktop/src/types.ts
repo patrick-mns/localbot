@@ -2,9 +2,12 @@ export interface Bot {
   id: string;
   name: string;
   role: string;
+  instructions?: string;
   provider: string;
   model: string;
   status?: "thinking" | "idle";
+  /** Devices it can use: "owner" is its own. */
+  computers?: { computerId: string; role: "owner" | "guest" }[];
 }
 
 export interface Computer {
@@ -15,6 +18,14 @@ export interface Computer {
   state: "running" | "stopped" | "creating" | "error" | string;
   display: { kind: "vnc"; url: string; password?: string } | { kind: string; [k: string]: unknown };
   bots: string[];
+}
+
+export interface Attachment {
+  id: string;
+  name: string;
+  size: number;
+  mime: string;
+  devicePath?: string;
 }
 
 export interface Message {
@@ -28,6 +39,12 @@ export interface Message {
   routine?: { id: string; name: string };
   from?: { botId: string; name: string };
   notice?: boolean;
+  /** Files the user sent, or the bot shared. */
+  files?: Attachment[];
+  /** Sent while the bot was working; it reads it at its next step. */
+  queued?: boolean;
+  /** The bot asks to connect (or allow) an app. */
+  connect?: { connector: string; name: string; description: string; mode: "connect" | "allow"; reason?: string; state: "pending" | "connected" | "dismissed" };
 }
 
 export interface ProviderStatus {

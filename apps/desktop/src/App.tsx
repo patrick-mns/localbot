@@ -5,6 +5,9 @@ import { Sidebar, type Selection } from "./components/Sidebar";
 import { Chat } from "./components/Chat";
 import { Screen } from "./components/Screen";
 import { Setup } from "./components/Setup";
+import { Modal } from "./components/Modal";
+import { BotEditor } from "./components/BotEditor";
+import { Settings } from "./components/Settings";
 
 export function App() {
   const [bots, setBots] = useState<Bot[]>([]);
@@ -13,7 +16,7 @@ export function App() {
   const [thinking, setThinking] = useState<Set<string>>(new Set());
   const [selection, setSelection] = useState<Selection>(null);
   const [controlling, setControlling] = useState(false);
-  const [dialog, setDialog] = useState<"bot" | "device" | null>(null);
+  const [dialog, setDialog] = useState<"bot" | "device" | "editBot" | "settings" | null>(null);
   const [brainError, setBrainError] = useState<string | null>(null);
 
   const refreshBots = useCallback(async () => {
@@ -69,7 +72,7 @@ export function App() {
     <div className={`layout ${bot ? "" : "no-chat"}`}>
       <Sidebar bots={bots} computers={computers} thinking={thinking} selection={selection}
         onSelect={(s) => { setSelection(s); setControlling(false); }}
-        onNewBot={() => setDialog("bot")} onNewDevice={() => setDialog("device")} />
+        onNewBot={() => setDialog("bot")} onNewDevice={() => setDialog("device")} onSettings={() => setDialog("settings")} />
       <main className="stage">
         <header className="stage-head">
           <div>
@@ -94,9 +97,13 @@ export function App() {
             : <div className="screen-empty">{bot ? "This bot has no device. Add one in Devices and give the bot access." : "Create a bot to get started."}</div>}
         </div>
       </main>
-      {bot && <Chat bot={bot} thinking={thinking.has(bot.id)} />}
+      {bot && <Chat bot={bot} thinking={thinking.has(bot.id)} onEdit={() => setDialog("editBot")} />}
       {dialog === "bot" && <NewBot computers={computers} onClose={() => setDialog(null)} onCreated={(id) => setSelection({ kind: "bot", id })} />}
       {dialog === "device" && <NewDevice onClose={() => setDialog(null)} onCreated={(id) => setSelection({ kind: "device", id })} />}
+      {dialog === "editBot" && bot && (
+        <BotEditor bot={bot} computers={computers} providers={providers} onClose={() => setDialog(null)} onDeleted={() => setSelection(null)} />
+      )}
+      {dialog === "settings" && <Settings providers={providers} computers={computers} onClose={() => setDialog(null)} />}
     </div>
   );
 }
@@ -178,19 +185,5 @@ function NewDevice({ onClose, onCreated }: { onClose: () => void; onCreated: (id
         {step ? "Creating…" : "Create device"}
       </button>
     </Modal>
-  );
-}
-
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return (
-    <div className="modal-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
-        <div className="modal-head">
-          <span>{title}</span>
-          <button className="icon" onClick={onClose} aria-label="Close">×</button>
-        </div>
-        {children}
-      </div>
-    </div>
   );
 }

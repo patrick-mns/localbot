@@ -3,7 +3,7 @@ import type { Bot, Computer } from "../types";
 export type Selection = { kind: "bot"; id: string } | { kind: "device"; id: string } | null;
 
 /** Bots and devices, as in the macOS app's sidebar. */
-export function Sidebar({ bots, computers, thinking, selection, onSelect, onNewBot, onNewDevice }: {
+export function Sidebar({ bots, computers, thinking, selection, onSelect, onNewBot, onNewDevice, onSettings }: {
   bots: Bot[];
   computers: Computer[];
   thinking: Set<string>;
@@ -11,6 +11,7 @@ export function Sidebar({ bots, computers, thinking, selection, onSelect, onNewB
   onSelect: (s: Selection) => void;
   onNewBot: () => void;
   onNewDevice: () => void;
+  onSettings: () => void;
 }) {
   return (
     <nav className="sidebar">
@@ -44,6 +45,7 @@ export function Sidebar({ bots, computers, thinking, selection, onSelect, onNewB
           </span>
         </button>
       ))}
+      <button className="settings-button" onClick={onSettings} title="Settings">⚙ Settings</button>
     </nav>
   );
 }
