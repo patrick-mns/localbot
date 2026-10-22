@@ -280,7 +280,7 @@ actor Runtime {
             Task {
                 _ = try? await process.wait()
                 try? await process.delete()
-                await self.forget(execId)
+                self.forget(execId)
             }
             return ["code": 0, "stdout": "", "stderr": ""]
         }
@@ -381,19 +381,19 @@ final class Progress: @unchecked Sendable {
 
     var handler: ProgressHandler {
         { [self] events in
-            lock.lock()
-            for e in events {
-                switch e {
-                case .addSize(let n): size += n
-                case .addTotalSize(let n): total += n
-                default: break
+            let (send, fraction) = lock.withLock { () -> (Bool, Double) in
+                for e in events {
+                    switch e {
+                    case .addSize(let n): size += n
+                    case .addTotalSize(let n): total += n
+                    default: break
+                    }
                 }
+                let now = Date()
+                let send = total > 0 && now.timeIntervalSince(last) > 0.25
+                if send { last = now }
+                return (send, total > 0 ? Double(size) / Double(total) : 0)
             }
-            let now = Date()
-            let send = total > 0 && now.timeIntervalSince(last) > 0.25
-            if send { last = now }
-            let fraction = total > 0 ? Double(size) / Double(total) : 0
-            lock.unlock()
             if send { emit("progress", ["step": "download", "fraction": min(1, fraction)]) }
         }
     }

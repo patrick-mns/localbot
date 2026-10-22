@@ -116,6 +116,8 @@ final class Brain: ObservableObject {
         var connect: ConnectRequest?
         /// Posted by Local Bot itself (an app got connected), not the user.
         var notice: Bool?
+        /// Sent while the bot was working; it reads it at its next step.
+        var queued: Bool?
 
         struct ConnectRequest: Decodable, Hashable {
             let connector: String
@@ -1083,7 +1085,11 @@ final class Brain: ObservableObject {
                 messages[msg.botId] = list
                 return
             }
-            if let i = list.firstIndex(where: { $0.id == msg.id }) {
+            if let i = list.firstIndex(where: { $0.id == msg.id }), list[i].queued == true, msg.queued != true {
+                // A message sent mid-task, now read: it moves to where the bot read it.
+                list.remove(at: i)
+                list.append(msg)
+            } else if let i = list.firstIndex(where: { $0.id == msg.id }) {
                 // The final message carries the full text; keep streamed text if it's empty.
                 // Cards (connect, files) have no text but do change (connected, dismissed).
                 if !msg.text.isEmpty || msg.error != nil || msg.connect != nil || msg.files != nil { list[i] = msg }
