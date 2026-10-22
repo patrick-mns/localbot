@@ -31,10 +31,10 @@ export class MessageStore {
     this.migrate(join(dir, "messages.json"));
   }
 
-  /** Insert or replace; a replaced message keeps its place in the chat. */
-  upsert(m: Message): Message {
+  /** Insert or replace; a replaced message keeps its place in the chat unless `toEnd`. */
+  upsert(m: Message, toEnd = false): Message {
     const existing = this.db.prepare("SELECT seq FROM messages WHERE id = ?").get(m.id) as { seq: number } | undefined;
-    const seq = existing?.seq ?? this.nextSeq();
+    const seq = (!toEnd && existing?.seq) || this.nextSeq();
     this.db.prepare("INSERT OR REPLACE INTO messages (id, bot_id, at, seq, data) VALUES (?, ?, ?, ?, ?)")
       .run(m.id, m.botId, m.at, seq, JSON.stringify(m));
     return m;
