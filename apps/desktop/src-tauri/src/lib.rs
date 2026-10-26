@@ -24,11 +24,16 @@ struct Brain {
 /// overrides where they are).
 fn launch_command(app: &AppHandle) -> Result<Command, String> {
     let res = app.path().resource_dir().map_err(|e| format!("No resource folder: {e}"))?;
+    // Node can't load an ES module from a verbatim (\\?\C:\…) path.
+    let res = match res.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(plain) if !plain.starts_with("UNC") => PathBuf::from(plain),
+        _ => res,
+    };
     let node = res.join(if cfg!(windows) { "node.exe" } else { "node" });
     let script = res.join("brain").join("brain.mjs");
     if node.exists() && script.exists() {
         let mut cmd = Command::new(node);
-        cmd.arg(script);
+        cmd.arg(script).current_dir(&res);
         return Ok(cmd);
     }
     // An installed app always has them: say what's missing instead of

@@ -70,25 +70,6 @@ jobs:
           npm ci
           npx tauri build --config src-tauri/tauri.release.conf.json --config "{\"version\":\"$(cat ../../VERSION)\"}"
 
-      # The installed app, as a user gets it: install silently, open it, and
-      # check its brain is running (what failed as "The brain stopped").
-      - name: Smoke test the installed app
-        shell: bash
-        run: |
-          EXE=$(ls apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe | head -1)
-          "$EXE" /S
-          sleep 5
-          DIR="$LOCALAPPDATA/Local Bot"
-          echo "--- installed in $DIR"; ls -R "$DIR" | head -40
-          APP=$(ls "$DIR"/*.exe | grep -vi uninstall | head -1)
-          echo "--- starting $APP"
-          "$APP" &
-          sleep 25
-          echo "--- processes"; tasklist | grep -iE "node|local" || true
-          LOG="$LOCALAPPDATA/io.github.patrick-mns.localbot/logs/brain.log"
-          echo "--- $LOG"; cat "$LOG" || true
-          tasklist | grep -qi "node.exe"
-
       - uses: actions/upload-artifact@v4
         with:
           name: LocalBot-windows-${{ github.sha }}
@@ -96,3 +77,24 @@ jobs:
             apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
             apps/desktop/src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
+
+      # The installed app, as a user gets it: install silently, open it, and
+      # check its brain is running (what failed as "The brain stopped"). After
+      # the upload, so a hung test still leaves the installer to try.
+      - name: Smoke test the installed app
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $exe = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          Start-Process -FilePath $exe.FullName -ArgumentList '/S' -Wait
+          $dir = Join-Path $env:LOCALAPPDATA 'Local Bot'
+          "--- installed in $dir"; Get-ChildItem -Recurse $dir | Select-Object -First 40 -ExpandProperty FullName
+          $app = Get-ChildItem "$dir/*.exe" | Where-Object Name -notmatch 'uninstall' | Select-Object -First 1
+          "--- starting $($app.FullName)"
+          Start-Process -FilePath $app.FullName
+          Start-Sleep 25
+          "--- processes"; Get-Process | Where-Object { $_.Name -match 'node|local' } | Format-Table Name, Id, Path -AutoSize | Out-String -Width 300
+          $log = Join-Path $env:LOCALAPPDATA 'io.github.patrick-mns.localbot/logs/brain.log'
+          "--- $log"; if (Test-Path $log) { Get-Content $log }
+          if (-not (Get-Process node -ErrorAction SilentlyContinue)) { throw "The brain (node.exe) isn't running" }
+
