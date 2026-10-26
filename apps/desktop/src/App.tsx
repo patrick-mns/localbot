@@ -27,9 +27,11 @@ export function App() {
   const refreshComputers = useCallback(async () => setComputers(await brain.request<Computer[]>("computers.list")), []);
   const refreshProviders = useCallback(async () => setProviders(await brain.request<ProviderStatus>("providers.status")), []);
 
+  const load = useCallback(() =>
+    Promise.all([refreshBots(), refreshComputers(), refreshProviders()]).catch((e) => setBrainError(String(e.message ?? e))),
+  [refreshBots, refreshComputers, refreshProviders]);
+
   useEffect(() => {
-    const load = () =>
-      Promise.all([refreshBots(), refreshComputers(), refreshProviders()]).catch((e) => setBrainError(String(e.message ?? e)));
     void load();
     const offs = [
       brain.on("bots", () => void refreshBots()),
@@ -42,7 +44,8 @@ export function App() {
           else next.delete(botId);
           return next;
         })),
-      brain.on("brain.exit", () => setBrainError("The brain stopped. Restart Local Bot.")),
+      brain.on("brain.exit", (code: number | null) =>
+        setBrainError(brain.startError ? `The brain couldn’t start: ${brain.startError}` : `The brain stopped (exit code ${code ?? "unknown"}).`)),
     ];
     // Devices change outside the app too (docker): poll their state.
     const poll = setInterval(() => void refreshComputers().catch(() => {}), 5000);
@@ -50,7 +53,7 @@ export function App() {
       offs.forEach((off) => off());
       clearInterval(poll);
     };
-  }, [refreshBots, refreshComputers, refreshProviders]);
+  }, [load, refreshBots, refreshComputers, refreshProviders]);
 
   // Select the first bot once there is one.
   useEffect(() => {
@@ -64,7 +67,7 @@ export function App() {
     return undefined;
   }, [selection, computers, bot]);
 
-  if (brainError) return <div className="setup"><div className="setup-card"><h1>Something went wrong</h1><p className="muted">{brainError}</p></div></div>;
+  if (brainError) return <BrainError message={brainError} onRetry={() => { setBrainError(null); void brain.restart().then(load); }} />;
   if (!providers) return <div className="setup"><div className="muted">Starting…</div></div>;
   if (!providers.providers.some((p) => p.configured)) return <Setup status={providers} onDone={() => void refreshProviders()} />;
 
@@ -185,5 +188,27 @@ function NewDevice({ onClose, onCreated }: { onClose: () => void; onCreated: (id
         {step ? "Creating…" : "Create device"}
       </button>
     </Modal>
+  );
+}
+
+/** The brain didn't start or stopped: say why (its log) and offer to try again. */
+function BrainError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  const [details, setDetails] = useState("");
+  useEffect(() => {
+    brain.diagnostics().then(setDetails).catch(() => {});
+  }, [message]);
+  return (
+    <div className="setup">
+      <div className="setup-card wide">
+        <h1>Something went wrong</h1>
+        <p className="muted">{message}</p>
+        {details && <pre className="detail selectable">{details}</pre>}
+        <div className="modal-actions">
+          <button className="pill" onClick={() => navigator.clipboard.writeText(`${message}\n\n${details}`)}>Copy details</button>
+          <span className="spacer" />
+          <button className="primary" onClick={onRetry}>Try again</button>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -15,6 +15,8 @@ class BrainClient {
   private pending = new Map<number, Pending>();
   private handlers = new Map<string, Set<Handler>>();
   private started?: Promise<void>;
+  /** Why the brain couldn't start, if it couldn't. */
+  startError?: string;
 
   start() {
     this.started ??= (async () => {
@@ -24,9 +26,27 @@ class BrainClient {
         this.pending.clear();
         this.emit("brain.exit", payload);
       });
-      await invoke("brain_start");
+      // A brain that can't start at all is reported like one that stopped.
+      await invoke("brain_start").catch((err) => {
+        this.startError = String(err);
+        this.emit("brain.exit", null);
+      });
     })();
     return this.started;
+  }
+
+  /** After the brain stopped: start it again (the "Try again" button). */
+  async restart() {
+    this.startError = undefined;
+    await invoke("brain_start").catch((err) => {
+      this.startError = String(err);
+      this.emit("brain.exit", null);
+    });
+  }
+
+  /** How the brain was started and the end of its log, for the error screen. */
+  diagnostics() {
+    return invoke<string>("brain_diagnostics");
   }
 
   async request<T = any>(method: string, params?: unknown): Promise<T> {

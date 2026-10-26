@@ -70,6 +70,25 @@ jobs:
           npm ci
           npx tauri build --config src-tauri/tauri.release.conf.json --config "{\"version\":\"$(cat ../../VERSION)\"}"
 
+      # The installed app, as a user gets it: install silently, open it, and
+      # check its brain is running (what failed as "The brain stopped").
+      - name: Smoke test the installed app
+        shell: bash
+        run: |
+          EXE=$(ls apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe | head -1)
+          "$EXE" /S
+          sleep 5
+          DIR="$LOCALAPPDATA/Local Bot"
+          echo "--- installed in $DIR"; ls -R "$DIR" | head -40
+          APP=$(ls "$DIR"/*.exe | grep -vi uninstall | head -1)
+          echo "--- starting $APP"
+          "$APP" &
+          sleep 25
+          echo "--- processes"; tasklist | grep -iE "node|local" || true
+          LOG="$LOCALAPPDATA/io.github.patrick-mns.localbot/logs/brain.log"
+          echo "--- $LOG"; cat "$LOG" || true
+          tasklist | grep -qi "node.exe"
+
       - uses: actions/upload-artifact@v4
         with:
           name: LocalBot-windows-${{ github.sha }}
