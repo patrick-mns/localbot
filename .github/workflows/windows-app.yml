@@ -48,6 +48,21 @@ jobs:
           curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt" | grep " $ZIP\$" | sha256sum -c -
           unzip -q -j "$ZIP" "node-v$NODE_VERSION-win-x64/node.exe" -d apps/desktop/src-tauri/resources
 
+      # The bundled brain must start on Windows and answer: what the app sees
+      # as "The brain stopped" otherwise. Run from another folder, as an
+      # installed app would be.
+      - name: Smoke test the bundled brain
+        shell: bash
+        run: |
+          R="$PWD/apps/desktop/src-tauri/resources"
+          mkdir -p /tmp/smoke && cd /tmp/smoke
+          printf '%s\n' '{"id":1,"method":"app.info"}' '{"id":2,"method":"providers.status"}' \
+            '{"id":3,"method":"bots.list"}' '{"id":4,"method":"computers.list"}' > in.txt
+          { cat in.txt; sleep 20; } | timeout 40 "$R/node.exe" "$R/brain/brain.mjs" > out.txt 2> err.txt || echo "brain exited with $?"
+          echo "--- stdout"; cut -c1-300 out.txt
+          echo "--- stderr"; cat err.txt
+          grep -q '"id":4' out.txt
+
       - name: Build installers
         shell: bash
         working-directory: apps/desktop
