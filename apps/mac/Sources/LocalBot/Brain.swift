@@ -878,10 +878,12 @@ final class Brain: ObservableObject {
         await refreshMemory(bot)
     }
 
-    func editMemory(_ id: String, bot: String, text: String? = nil, kind: String? = nil) async {
+    /// `team`: share with every bot (true) or keep it to `bot` (false).
+    func editMemory(_ id: String, bot: String, text: String? = nil, kind: String? = nil, team: Bool? = nil) async {
         var params: [String: Any] = ["id": id, "botId": bot]
         if let text { params["text"] = text }
         if let kind { params["kind"] = kind }
+        if let team { params["scope"] = team ? "team" : "me" }
         await perform("memory.edit", params)
         await refreshMemory(bot)
     }

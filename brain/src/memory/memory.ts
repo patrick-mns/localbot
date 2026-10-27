@@ -20,7 +20,11 @@ export const MEMORY_TOOLS: ToolSpec[] = [
           description: "fact (default) · procedure: how to do something (set topic) · core: always-relevant (who the user is, standing preferences)",
         },
         topic: { type: "string", description: "For procedures: the app or site, e.g. 'Gmail'" },
-        scope: { type: "string", enum: ["me", "team"], description: "team = useful to every bot (default: me)" },
+        scope: {
+          type: "string", enum: ["me", "team"],
+          description: "me (default): yours only. team: only facts about the user themselves that every bot needs " +
+            "(their name, language, how they like to work). Never projects, channels, clients, files or tasks: those stay yours.",
+        },
         replaces: { type: "string", description: "Id of a memory this corrects or updates (e.g. m-1a2b3c4d)" },
       },
       required: ["text"],
@@ -123,7 +127,7 @@ export class MemoryService {
     const savedNow = this.store.list(bot.id).filter((m) => m.kind !== "episode" && m.createdAt >= turn.startedAt);
     const prompt = [
       "You maintain the long-term memory of an AI teammate. From the exchange below, decide what to keep.",
-      "Return ONLY JSON: {\"episode\": string|null, \"ops\": [{\"op\": \"add\"|\"update\"|\"forget\", \"id\"?: string, \"kind\"?: \"fact\"|\"procedure\"|\"core\", \"text\"?: string, \"topic\"?: string, \"scope\"?: \"me\"|\"team\"}]}",
+      "Return ONLY JSON: {\"episode\": string|null, \"ops\": [{\"op\": \"add\"|\"update\"|\"forget\", \"id\"?: string, \"kind\"?: \"fact\"|\"procedure\"|\"core\", \"text\"?: string, \"topic\"?: string}]}",
       "- episode: one line, past tense, the task that was done and its outcome. Use null when the exchange was only conversation, a question answered from knowledge, or only telling the bot something to remember. Never mention memory itself (no \"was saved\", \"already stored\", \"confirmed\").",
       "- add only durable, reusable knowledge the bot did NOT already save during this exchange: facts about the user/their work, preferences, decisions, how-tos for apps/sites. Not transient details, not secrets.",
       "- update (with id) when the exchange changes a memory from before it; forget (with id) when one is now wrong.",
@@ -152,14 +156,17 @@ export class MemoryService {
       try {
         const text = String(op.text ?? "").trim();
         if (op.op === "add" && text && !looksSecret(text)) {
+          // Learned memories stay with the bot that learned them: a project one
+          // bot works on shouldn't leak into another's. Sharing is a choice
+          // (the remember tool, or the user in the Memory tab).
           this.store.add({
-            botId: op.scope === "team" ? null : bot.id,
+            botId: bot.id,
             kind: ["fact", "procedure", "core"].includes(op.kind) ? op.kind : "fact",
             text, topic: op.topic, source: "learned",
           });
-        } else if (op.op === "update" && op.id && text && !looksSecret(text) && this.ownsOrTeam(bot, op.id)) {
+        } else if (op.op === "update" && op.id && text && !looksSecret(text) && this.owns(bot, op.id)) {
           this.store.supersede(op.id, text, "learned");
-        } else if (op.op === "forget" && op.id && this.ownsOrTeam(bot, op.id)) {
+        } else if (op.op === "forget" && op.id && this.owns(bot, op.id)) {
           this.store.forget(op.id);
         }
       } catch {
@@ -194,9 +201,8 @@ export class MemoryService {
     if (text.trim()) this.store.setChatSummary(bot.id, text.trim(), pending[pending.length - 1].at);
   }
 
-  private ownsOrTeam(bot: Bot, id: string) {
-    const m = this.store.get(id);
-    return !!m && (m.botId === bot.id || m.botId === null);
+  private owns(bot: Bot, id: string) {
+    return this.store.get(id)?.botId === bot.id;
   }
 }
 

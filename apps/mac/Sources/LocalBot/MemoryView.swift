@@ -183,6 +183,11 @@ struct MemoryRow: View {
             } else if memory.kind == "core" {
                 Button("Unpin") { Task { await brain.editMemory(memory.id, bot: bot.id, kind: "fact") } }
             }
+            if memory.botId == nil {
+                Button("Only for \(bot.name)") { Task { await brain.editMemory(memory.id, bot: bot.id, team: false) } }
+            } else {
+                Button("Share with all bots") { Task { await brain.editMemory(memory.id, bot: bot.id, team: true) } }
+            }
             Divider()
             Button("Forget") { Task { await brain.forgetMemory(memory.id, bot: bot.id) } }
             Button("Delete forever", role: .destructive) { confirmDelete = true }
@@ -247,7 +252,7 @@ struct AddMemoryForm: View {
                         .frame(width: 110)
                 }
                 Toggle("Team", isOn: $team).toggleStyle(.checkbox).font(.system(size: 11))
-                    .help("Every bot can use it")
+                    .help("Every bot can use it. For things about you, not a project")
                 Spacer()
             }
             HStack {
