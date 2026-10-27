@@ -196,7 +196,11 @@ export class Conversations {
     this.running.set(bot.id, abort);
     this.emit("bot.status", { botId: bot.id, status: "thinking" });
 
-    const done = this.run(bot, abort.signal, chain, inRoutine)
+    // Stop ends the turn right away, without waiting for a device action or
+    // an app's tool that's still running; the run sees the abort and winds down.
+    const stopped = new Promise<RunOutcome>((resolve) =>
+      abort.signal.addEventListener("abort", () => resolve({ ok: false, error: "Stopped" }), { once: true }));
+    const done = Promise.race([this.run(bot, abort.signal, chain, inRoutine), stopped])
       .catch((err): RunOutcome => ({ ok: false, error: err instanceof Error ? err.message : String(err) }))
       .then((outcome) => {
         this.learn(bot, user, outcome);
@@ -205,19 +209,24 @@ export class Conversations {
       .finally(() => {
         this.running.delete(bot.id);
         this.emit("bot.status", { botId: bot.id, status: "idle" });
-        this.resumeQueued(bot.id);
+        this.resumeQueued(bot.id, abort.signal.aborted);
       });
     return { userId: user.id, done };
   }
 
   /**
-   * A message that came in as the turn was ending (or was stopped) starts the
-   * next turn; it's already in the chat, so the turn just reads it.
+   * A message that came in as the turn was ending starts the next turn; it's
+   * already in the chat, so the turn just reads it. After Stop the bot stays
+   * stopped: the messages stay in the chat for the next turn.
    */
-  private resumeQueued(botId: string) {
+  private resumeQueued(botId: string, stopped = false) {
     const waiting = this.queued.get(botId) ?? [];
     this.queued.delete(botId);
     if (!waiting.length) return;
+    if (stopped) {
+      for (const m of waiting) this.markRead(m);
+      return;
+    }
     const bot = this.team().find((b) => b.id === botId);
     if (!bot) return;
     for (const m of waiting) this.markRead(m);
@@ -276,6 +285,7 @@ export class Conversations {
     }
     // Files the user just sent go to the device first, so the bot is told where.
     if (place) await this.deliverFiles(bot, place);
+    if (signal.aborted) return { ok: false, error: "Stopped" };
     const transcript: ChatMessage[] = [
       { role: "system", content: this.system(bot, place, teammates) },
       ...(offers.length
@@ -407,6 +417,7 @@ export class Conversations {
         }
         transcript.push({ role: "tool", tool_call_id: call.id, content });
       }
+      if (signal.aborted) break;
       shortenOldToolOutputs(transcript);
 
       if (visual && place) {
