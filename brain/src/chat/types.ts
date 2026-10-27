@@ -42,6 +42,8 @@ export interface ChatRequest {
   tools?: ToolSpec[];
   signal?: AbortSignal;
   onDelta: (text: string) => void;
+  /** A tighter cap on the reply (quick checks); the provider's own cap still applies. */
+  maxTokens?: number;
 }
 
 export interface ChatResult {

@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { Bot } from "../bots/bots.ts";
-import { ASK_BOT_TOOL, COMPUTER_TOOLS, ROUTINE_TOOLS, SHARE_FILE_TOOL, runTool, suggestConnectionTool } from "../agent/tools.ts";
+import { ASK_BOT_TOOL, COMPUTER_TOOLS, ROUTINE_TOOLS, SHARE_FILE_TOOL, WAKE_CHECK_TOOLS, WAKEUP_TOOLS, runTool, suggestConnectionTool } from "../agent/tools.ts";
 import { FileStore, readDeviceFile, writeDeviceFile, type Attachment } from "./files.ts";
 import type { McpServers } from "../mcp/servers.ts";
 import { MessageStore } from "./messages.ts";
 import type { Routines } from "../routines/routines.ts";
+import { MAX_CHECKS, type Wakeup, type Wakeups } from "../routines/wakeups.ts";
 import { MEMORY_TOOLS, VERBATIM_MESSAGES, type MemoryService } from "../memory/memory.ts";
 import type { Hands } from "../hands/types.ts";
 import type { RunOutcome } from "../routines/routines.ts";
@@ -24,6 +25,8 @@ export interface Message {
   detail?: string;
   /** Set on the prompt a routine posted, so the chat can label it. */
   routine?: { id: string; name: string };
+  /** Set on the prompt of a wake-up the bot set for itself. */
+  wakeup?: { note: string };
   /** Set on a prompt another bot sent through ask_bot. */
   from?: { botId: string; name: string };
   /** Files the bot handed over (share_file), downloadable from the chat. */
@@ -58,6 +61,7 @@ type Team = () => Bot[];
 
 interface TurnOptions {
   routine?: Message["routine"];
+  wakeup?: Message["wakeup"];
   from?: Message["from"];
   /** Posted by Local Bot itself (an app got connected). */
   notice?: boolean;
@@ -81,6 +85,10 @@ const MAX_DELEGATION_HOPS = 2;
 /** How long to wait for a busy teammate, and for a teammate's answer. */
 const BUSY_WAIT_MS = 90_000;
 const DELEGATION_TIMEOUT_MS = 10 * 60_000;
+/** The quick look when a wake-up is due: recent chat as text, and a short reply. */
+const WAKE_CONTEXT_MESSAGES = 12;
+const WAKE_CONTEXT_CHARS = 400;
+const WAKE_CHECK_TOKENS = 300;
 
 export class Conversations {
   private messages = new MessageStore();
@@ -89,6 +97,7 @@ export class Conversations {
   private queued = new Map<string, Message[]>();
 
   private routines?: Routines;
+  private wakeups?: Wakeups;
   private memory?: MemoryService;
   private mcp?: McpServers;
 
@@ -104,6 +113,10 @@ export class Conversations {
   /** Routines are built on top of conversations, so they're attached afterwards. */
   attachRoutines(routines: Routines) {
     this.routines = routines;
+  }
+
+  attachWakeups(wakeups: Wakeups) {
+    this.wakeups = wakeups;
   }
 
   attachMemory(memory: MemoryService) {
@@ -151,8 +164,10 @@ export class Conversations {
     this.memory?.store.clearChatSummary(botId);
   }
 
+  /** Stops the bot: the current turn, and a wake-up it set for later. */
   stop(botId: string) {
     this.running.get(botId)?.abort();
+    this.wakeups?.cancel(botId);
   }
 
   /**
@@ -179,13 +194,13 @@ export class Conversations {
   }
 
   private start(bot: Bot, text: string, opts: TurnOptions = {}) {
-    const { routine, from, notice, files } = opts;
+    const { routine, wakeup, from, notice, files } = opts;
     const chain = opts.chain ?? [bot.id];
     if (this.running.has(bot.id)) throw new Error(`${bot.name} is still working`);
     const prompt = text.trim();
     if (!prompt) throw new Error("Empty message");
 
-    const user = this.add({ botId: bot.id, role: "user", text: prompt, ...(routine ? { routine } : {}), ...(from ? { from } : {}), ...(notice ? { notice } : {}), ...(files?.length ? { files } : {}) });
+    const user = this.add({ botId: bot.id, role: "user", text: prompt, ...(routine ? { routine } : {}), ...(wakeup ? { wakeup } : {}), ...(from ? { from } : {}), ...(notice ? { notice } : {}), ...(files?.length ? { files } : {}) });
     this.emit("message", user);
     return this.begin(bot, user, chain, !!routine);
   }
@@ -275,7 +290,7 @@ export class Conversations {
     // Apps it could ask the user to connect (or to allow for this bot).
     const offers = this.mcp ? this.mcp.connectorsFor(servers).filter((c) => c.status !== "ready") : [];
     const connectTool = offers.length ? [suggestConnectionTool(offers.map((c) => c.id))] : [];
-    const tools = [...(teammates.length ? [ASK_BOT_TOOL] : []), ...routineTools, ...(this.memory ? MEMORY_TOOLS : []), ...mcpTools, ...connectTool];
+    const tools = [...(teammates.length ? [ASK_BOT_TOOL] : []), ...routineTools, ...(this.wakeups ? WAKEUP_TOOLS : []), ...(this.memory ? MEMORY_TOOLS : []), ...mcpTools, ...connectTool];
     let lastReply: string | undefined;
     let place: Workplace | null = null;
     try {
@@ -301,9 +316,10 @@ export class Conversations {
       // Restated after the history so earlier turns can't override the current state.
       {
         role: "system",
-        content: place
+        content: (place
           ? `Current state: you have the device "${place.computerName}" and can use it now.`
-          : "Current state: you have NO device right now. Earlier messages may mention one you no longer have; don't claim to see or use a screen.",
+          : "Current state: you have NO device right now. Earlier messages may mention one you no longer have; don't claim to see or use a screen.") +
+          this.pendingWakeup(bot),
       },
     ];
 
@@ -368,6 +384,11 @@ export class Conversations {
           const out = this.memory.tool(bot, call.function.name, call.function.arguments);
           if (out.activity) this.activity(bot, out.activity);
           transcript.push({ role: "tool", tool_call_id: call.id, content: out.result });
+          continue;
+        }
+        if (WAKEUP_TOOLS.some((t) => t.name === call.function.name)) {
+          content = this.wakeupTool(bot, call.function.name, call.function.arguments);
+          transcript.push({ role: "tool", tool_call_id: call.id, content });
           continue;
         }
         if (ROUTINE_TOOLS.some((t) => t.name === call.function.name)) {
@@ -462,6 +483,90 @@ export class Conversations {
       void this.memory.consolidate(current, { request: prompt.text, steps, reply: outcome.reply, startedAt: prompt.at }).catch(() => {});
     }
     void this.memory.compact(current, history).catch(() => {});
+  }
+
+  /**
+   * A wake-up is due. First a quick, cheap look: the recent chat as text, no
+   * screen and no app tools, a short reply choosing to work, sleep again, or
+   * stop. Only work starts a full turn.
+   */
+  async wake(bot: Bot, w: Wakeup) {
+    if (this.running.has(bot.id)) return;
+    const ago = Math.max(1, Math.round((Date.now() - new Date(w.createdAt).getTime()) / 60_000));
+    const recent = this.history(bot.id)
+      .filter((m) => m.text && !m.connect && !m.queued)
+      .slice(-WAKE_CONTEXT_MESSAGES)
+      .map((m) => `${m.role === "user" ? "User" : m.role === "assistant" ? "You" : "Step"}: ${m.text.slice(0, WAKE_CONTEXT_CHARS)}${m.error ? ` (failed: ${m.error})` : ""}`)
+      .join("\n");
+    const messages: ChatMessage[] = [
+      {
+        role: "system",
+        content: [
+          `You are ${bot.name}, a bot in Local Bot.`,
+          `Now: ${new Date().toLocaleString("en-US", { dateStyle: "full", timeStyle: "short" })}.`,
+          `${ago} minutes ago you set a wake-up to: ${w.note}`,
+          "This is a quick check, not the work itself: you can't see the device or use apps here. Call exactly one tool: " +
+            "wake_continue if there is work to do now or you can't tell without looking; wake_sleep if you're still waiting on something; " +
+            "wake_done if nothing is left to do.",
+        ].join("\n\n"),
+      },
+      ...this.summary(bot),
+      { role: "user", content: `Recent chat:\n${recent || "(empty)"}` },
+    ];
+    let call;
+    try {
+      call = (await this.chatWith(bot).chat({ model: bot.model, messages, tools: WAKE_CHECK_TOOLS, maxTokens: WAKE_CHECK_TOKENS, onDelta: () => {} })).toolCalls[0];
+    } catch (err) {
+      this.failure(bot, "Woke up but couldn’t check", err);
+      return;
+    }
+    let a: any = {};
+    try {
+      a = JSON.parse(call?.arguments || "{}");
+    } catch {}
+    if (call?.name === "wake_sleep" && w.checks + 1 < MAX_CHECKS) {
+      try {
+        const next = this.wakeups!.set(bot.id, a.minutes, String(a.reason || w.note), w.checks + 1);
+        this.activity(bot, `Checked: not yet · next look at ${clock(next.at)}`);
+        return;
+      } catch {}
+    }
+    if (call?.name === "wake_done") {
+      this.activity(bot, `Woke up: nothing left to do${a.note ? ` · ${String(a.note).slice(0, 200)}` : ""}`);
+      return;
+    }
+    // Work now: asked to, no clear answer, or too many looks in a row.
+    if (this.running.has(bot.id)) return;
+    this.start(bot, String(a.instructions || w.note), { wakeup: { note: w.note } });
+  }
+
+  /** The current-state line about a wake-up the bot has set, if any. */
+  private pendingWakeup(bot: Bot) {
+    const w = this.wakeups?.forBot(bot.id);
+    return w ? ` You have a wake-up set for ${clock(w.at)}: ${w.note}` : "";
+  }
+
+  /** schedule_wakeup / cancel_wakeup. */
+  private wakeupTool(bot: Bot, name: string, rawArgs: string): string {
+    if (!this.wakeups) return "Error: wake-ups aren't available.";
+    if (name === "cancel_wakeup") {
+      if (!this.wakeups.cancel(bot.id)) return "You had no wake-up set.";
+      this.activity(bot, "Cancelled the wake-up");
+      return "Cancelled.";
+    }
+    let a: any;
+    try {
+      a = JSON.parse(rawArgs || "{}");
+    } catch {
+      return "Error: invalid arguments.";
+    }
+    try {
+      const w = this.wakeups.set(bot.id, a.minutes, a.reason);
+      this.activity(bot, `Will wake up at ${clock(w.at)} · ${w.note}`);
+      return `Wake-up set for ${clock(w.at)} (in ${Math.round(Number(a.minutes))} minutes).`;
+    } catch (err) {
+      return `Error: ${err instanceof Error ? err.message : err}`;
+    }
   }
 
   /** create_routine / list_routines / delete_routine, always scoped to this bot. */
@@ -699,6 +804,7 @@ export class Conversations {
           ].join("\n")
         : "",
       "When the user asks for something recurring or for later (\"every morning…\", \"tomorrow at 9…\"), create a routine with create_routine instead of only promising to do it. Confirm the name and schedule back to them.",
+      "When part of a task has to wait (a download, a build, a reply, a page that updates), set a wake-up with schedule_wakeup to come back to it instead of dropping it. Messages marked [Wake-up] are you coming back: continue the task, the user may be away; when it's finished, cancel the wake-up if one is left.",
       "Messages marked [Scheduled routine] run on a schedule while the user may be away: do the whole task without asking questions, then end with a short report of what you did and found.",
       "Messages marked [From bot …] come from a teammate, not the user: do what they ask and end with a clear, self-contained answer; that answer is sent back to them. Ask them questions only if you truly can't proceed.",
       "Reply in the same language the user writes in, and be direct.",
@@ -762,6 +868,8 @@ export class Conversations {
           ? `(Shared files: ${m.files.map((f) => f.name).join(", ")})`
           : m.routine
           ? `[Scheduled routine “${m.routine.name}”] ${m.text}`
+          : m.wakeup
+          ? `[Wake-up: ${m.wakeup.note}] ${m.text}`
           : m.from
             ? `[From bot “${m.from.name}”] ${m.text}`
             : m.notice
@@ -851,4 +959,9 @@ function dropOldScreens(transcript: ChatMessage[]) {
       m.content = m.content.map((p): ContentPart => (p.type === "image_url" ? { type: "text", text: "(older screenshot omitted)" } : p));
     }
   }
+}
+
+/** "14:30" in the user's local time. */
+function clock(iso: string) {
+  return new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 }

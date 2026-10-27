@@ -178,6 +178,59 @@ export const ROUTINE_TOOLS: ToolSpec[] = [
   },
 ];
 
+export const WAKEUP_TOOLS: ToolSpec[] = [
+  {
+    name: "schedule_wakeup",
+    description:
+      "Wake yourself up later to continue the current task, when something takes time (a download, a build, a reply, a page " +
+      "that updates). When it's due you'll take a quick look and decide whether to work, sleep again, or stop. One at a time: " +
+      "a new one replaces the previous. Not for recurring tasks the user asked for; those are routines.",
+    parameters: {
+      type: "object",
+      properties: {
+        minutes: { type: "integer", minimum: 1, maximum: 1440, description: "How long from now" },
+        reason: { type: "string", description: "What to check and do when you wake up, self-contained" },
+      },
+      required: ["minutes", "reason"],
+    },
+  },
+  {
+    name: "cancel_wakeup",
+    description: "Cancel your scheduled wake-up (the task is done or no longer needed).",
+    parameters: { type: "object", properties: {} },
+  },
+];
+
+/** The quick look when a wake-up is due: exactly one of these. */
+export const WAKE_CHECK_TOOLS: ToolSpec[] = [
+  {
+    name: "wake_continue",
+    description: "There's work to do now (or you can't tell without looking at the device): start working.",
+    parameters: {
+      type: "object",
+      properties: { instructions: { type: "string", description: "What to do now, for yourself" } },
+      required: ["instructions"],
+    },
+  },
+  {
+    name: "wake_sleep",
+    description: "It's too early (still waiting on something): sleep again and look later.",
+    parameters: {
+      type: "object",
+      properties: {
+        minutes: { type: "integer", minimum: 1, maximum: 1440 },
+        reason: { type: "string", description: "What to check next time" },
+      },
+      required: ["minutes", "reason"],
+    },
+  },
+  {
+    name: "wake_done",
+    description: "Nothing left to do for this: stop.",
+    parameters: { type: "object", properties: { note: { type: "string", description: "One short line on why" } } },
+  },
+];
+
 export interface ToolOutcome {
   /** Text sent back to the model as the tool result. */
   result: string;

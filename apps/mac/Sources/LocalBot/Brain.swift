@@ -108,6 +108,8 @@ final class Brain: ObservableObject {
         var detail: String?
         /// Set when a routine posted this prompt.
         var routine: RoutineRef?
+        /// Set when the bot woke itself up to continue a task.
+        var wakeup: WakeupRef?
         /// Set when another bot sent this prompt (ask_bot).
         var from: FromRef?
         /// Files the bot shared (share_file).
@@ -131,6 +133,26 @@ final class Brain: ObservableObject {
         struct FromRef: Decodable, Hashable { let botId: String; let name: String }
 
         struct RoutineRef: Decodable, Hashable { let id: String; let name: String }
+
+        struct WakeupRef: Decodable, Hashable { let note: String }
+    }
+
+    /// A wake-up a bot set for itself mid-task (brain/src/routines/wakeups.ts).
+    struct Wakeup: Decodable, Hashable {
+        let id: String
+        let botId: String
+        let at: String
+        let note: String
+
+        /// "14:30", or with the weekday when it isn't today.
+        var time: String {
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            guard let date = f.date(from: at) else { return "" }
+            return Calendar.current.isDateInToday(date)
+                ? date.formatted(date: .omitted, time: .shortened)
+                : date.formatted(.dateTime.weekday(.abbreviated).hour().minute())
+        }
     }
 
     /// Mirrors brain/src/chat/files.ts.
@@ -251,6 +273,8 @@ final class Brain: ObservableObject {
     @Published private(set) var thinking: Set<String> = []
     private var botStatusRevision: [String: Int] = [:]
     @Published private(set) var routines: [Routine] = []
+    /// Each bot's pending wake-up, if any (loaded with its chat).
+    @Published private(set) var wakeups: [String: Wakeup] = [:]
     @Published private(set) var mcpServers: [McpServer] = []
     @Published private(set) var connectors: [Connector] = []
     @Published private(set) var memories: [String: [Memory]] = [:]
@@ -907,6 +931,16 @@ final class Brain: ObservableObject {
         if let list: [Routine] = try? await request("routines.list") { routines = list }
     }
 
+    func refreshWakeup(_ botID: String) async {
+        guard let list: [Wakeup] = try? await request("wakeups.list", ["botId": botID]) else { return }
+        wakeups[botID] = list.first
+    }
+
+    func cancelWakeup(_ botID: String) async {
+        await perform("wakeups.cancel", ["botId": botID])
+        await refreshWakeup(botID)
+    }
+
     func saveRoutine(id: String?, botId: String, name: String, task: String, schedule: Schedule, enabled: Bool) async -> Bool {
         do {
             var params: [String: Any] = ["name": name, "task": task, "schedule": schedule.json, "enabled": enabled]
@@ -1112,6 +1146,10 @@ final class Brain: ObservableObject {
             Task { await refreshComputers() }
         case "routines":
             Task { await refreshRoutines() }
+        case "wakeups":
+            if let botID = (data as? [String: Any])?["botId"] as? String {
+                Task { await refreshWakeup(botID) }
+            }
         case "memory":
             if let botID = (data as? [String: Any])?["botId"] as? String, memories[botID] != nil {
                 Task { await refreshMemory(botID) }

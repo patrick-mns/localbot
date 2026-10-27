@@ -11,6 +11,7 @@ import { LumeProvider } from "./computers/lume.ts";
 import { RailwayProvider } from "./computers/railway.ts";
 import { RemoteProvider } from "./computers/remote.ts";
 import { Routines, type Routine, type RunOutcome } from "./routines/routines.ts";
+import { Wakeups } from "./routines/wakeups.ts";
 import { MemoryService } from "./memory/memory.ts";
 import { Collection } from "./store.ts";
 import { CloudLink } from "./cloud/link.ts";
@@ -168,6 +169,14 @@ function notifyWithApp(note: object) {
   }
 }
 conversations.attachRoutines(routines);
+
+/** Wake-ups bots set for themselves mid-task; a quick look first, work only if needed. */
+const wakeups = new Wakeups(
+  (w) => conversations.wake(bots.get(w.botId), w),
+  (botId) => conversations.isBusy(botId),
+  (botId) => emit("wakeups", { botId }),
+);
+conversations.attachWakeups(wakeups);
 
 /** Long-term memory; consolidation and summaries use each bot's own model. */
 const memory = new MemoryService(
@@ -379,6 +388,7 @@ export const methods: Record<string, Handler> = {
   "bots.delete": ({ id }) => {
     conversations.clear(id);
     routines.deleteForBot(id);
+    wakeups.deleteForBot(id);
     memory.store.deleteForBot(id);
     bots.delete(id);
     botsChanged();
@@ -427,6 +437,10 @@ export const methods: Record<string, Handler> = {
   "routines.update": ({ id, ...patch }) => routines.update(id, patch),
   "routines.delete": ({ id }) => routines.delete(id),
   "routines.runNow": ({ id }) => routines.runNow(id),
+
+  // Wake-ups (set by the bots themselves)
+  "wakeups.list": ({ botId }) => wakeups.list(botId),
+  "wakeups.cancel": ({ botId }) => wakeups.cancel(String(botId)),
 
   // Chat
   "chat.history": ({ botId }) => conversations.history(botId),
@@ -483,6 +497,7 @@ export const methods: Record<string, Handler> = {
   "app.reset": async ({ removeDevices }) => {
     conversations.reset();
     routines.reset();
+    wakeups.reset();
     memory.store.reset();
     bots.reset();
     await resetProviders();
@@ -515,6 +530,7 @@ function exportBundle(id: string) {
     accesses,
     messages: conversations.history(id),
     routines: routines.list(id).map(({ scheduleText, ...r }) => r),
+    wakeup: wakeups.forBot(id) ?? null,
     memory: memory.store.exportForBot(id),
   };
 }
@@ -525,6 +541,7 @@ function importBundle(b: Bundle) {
   const view = bots.importBot(b.bot, b.accesses ?? []);
   conversations.importHistory(b.bot.id, b.messages ?? []);
   routines.importForBot(b.bot.id, b.routines ?? []);
+  wakeups.importForBot(b.bot.id, b.wakeup);
   memory.store.importForBot(b.bot.id, b.memory ?? { rows: [], summary: null });
   botsChanged();
   emit("memory", { botId: b.bot.id });
@@ -535,6 +552,7 @@ function importBundle(b: Bundle) {
 function forgetBot(id: string) {
   conversations.clear(id);
   routines.deleteForBot(id);
+  wakeups.deleteForBot(id);
   memory.store.deleteForBot(id);
   bots.delete(id);
 }
@@ -666,6 +684,7 @@ const botScoped: Record<string, string> = {
   "memory.list": "botId", "memory.add": "botId", "memory.edit": "botId", "memory.forget": "botId",
   "memory.delete": "botId", "memory.summary": "botId",
   "routines.list": "botId", "routines.create": "botId",
+  "wakeups.list": "botId", "wakeups.cancel": "botId",
   "chat.history": "botId", "chat.page": "botId", "chat.send": "botId", "chat.stop": "botId", "chat.clear": "botId", "chat.file": "botId",
   "access.grant": "botId", "access.revoke": "botId",
 };
@@ -736,7 +755,10 @@ for (const method of ["routines.update", "routines.delete", "routines.runNow"]) 
 /** Keys load from the Keychain before the first request is served. */
 export const ready = Promise.all([initProviders(), railway.load(), remoteDevices.load(), cloud.load(), mcp.init()])
   .catch((err) => log("couldn’t load keys:", err instanceof Error ? err.message : err))
-  .then(() => routines.start());
+  .then(() => {
+    routines.start();
+    wakeups.start();
+  });
 
 /** Runs one method once the brain is ready. */
 export async function invoke(method: string, params: unknown) {

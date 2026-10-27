@@ -49,7 +49,10 @@ struct ChatView: View {
             addFiles(from: providers)
             return true
         }
-        .task { await brain.loadHistory(bot.id) }
+        .task {
+            await brain.loadHistory(bot.id)
+            await brain.refreshWakeup(bot.id)
+        }
         .onAppear { focused = true }
     }
 
@@ -160,6 +163,9 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(spacing: 0) {
+            if let wakeup = brain.wakeups[bot.id] {
+                WakeupBar(wakeup: wakeup) { Task { await brain.cancelWakeup(bot.id) } }
+            }
             VStack(alignment: .leading, spacing: 8) {
                 if !pending.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -295,6 +301,11 @@ struct MessageRow: View {
               if let routine = message.routine {
                 Label("Routine · \(routine.name)", systemImage: "clock.arrow.circlepath")
                     .font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.tertiary)
+              }
+              if let wakeup = message.wakeup {
+                Label("Wake-up · \(wakeup.note)", systemImage: "alarm")
+                    .font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.tertiary)
+                    .lineLimit(1).truncationMode(.tail)
               }
               if let from = message.from {
                 Label("From \(from.name)", systemImage: "arrow.turn.down.left")
@@ -671,5 +682,29 @@ private struct PendingFileChip: View {
         .task(id: url) {
             if isImage { thumb = await Thumbnails.downsampled(url, maxPixels: 120) }
         }
+    }
+}
+
+/// A wake-up the bot set for itself: when, what for, and a way to cancel it.
+private struct WakeupBar: View {
+    let wakeup: Brain.Wakeup
+    let cancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "alarm")
+            Text("Wakes up at \(wakeup.time) · \(wakeup.note)")
+                .lineLimit(1).truncationMode(.tail)
+                .help(wakeup.note)
+            Spacer(minLength: 8)
+            Button("Cancel", action: cancel)
+                .buttonStyle(.plain)
+                .fontWeight(.medium)
+                .foregroundStyle(Theme.text)
+                .help("Cancel this wake-up")
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(Theme.secondary)
+        .padding(.horizontal, 24).padding(.top, 8)
     }
 }

@@ -70,9 +70,10 @@ export class OpenAICompatibleProvider implements ChatProvider {
     return list;
   }
 
-  async chat({ model, messages, tools, signal, onDelta }: ChatRequest): Promise<ChatResult> {
+  async chat({ model, messages, tools, signal, onDelta, maxTokens: cap }: ChatRequest): Promise<ChatResult> {
     if (!this.configured()) throw new Error(`${this.label} has no API key`);
-    const maxTokens = await this.maxTokens(model);
+    const limit = await this.maxTokens(model);
+    const maxTokens = cap && limit ? Math.min(cap, limit) : cap || limit;
     const res = await fetch(`${this.opts.baseURL}/chat/completions`, {
       method: "POST",
       headers: this.headers(),
