@@ -335,11 +335,13 @@ test("a message sent as the bot is answering makes it keep going", async () => {
   ]);
 });
 
-test("a message queued when the turn is stopped starts the next turn", async () => {
+test("stop keeps the bot stopped; a message queued meanwhile stays in the chat for next time", async () => {
   const { conv, fakes, bots, id } = setup({ a: [] });
   let calls = 0;
+  let last = "";
   fakes.a.chat = (req) => {
     calls++;
+    last = JSON.stringify(req.messages);
     if (calls === 1) return new Promise((_, reject) => req.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
     req.onDelta("Ok, outra coisa.");
     return Promise.resolve({ text: "Ok, outra coisa.", toolCalls: [] });
@@ -350,7 +352,24 @@ test("a message queued when the turn is stopped starts the next turn", async () 
   conv.stop(id.a);
   await settle(conv, bots);
   await sleep(30);
+  assert.equal(calls, 1);
+  assert.ok(!conv.isBusy(id.a));
+  assert.equal(conv.history(id.a).find((m) => m.text === "esquece, faz outra coisa")?.queued, undefined);
+  await conv.send(bots[0], "agora sim");
   await settle(conv, bots);
   assert.equal(calls, 2);
-  assert.equal(conv.history(id.a).at(-1)?.text, "Ok, outra coisa.");
+  assert.match(last, /esquece, faz outra coisa/);
+});
+
+test("stop ends the turn even while a device action hangs", async () => {
+  class Stuck extends FakeHands {
+    override async shell() { return new Promise<never>(() => {}); }
+  }
+  const { conv, bots, id } = setup({ a: [{ tools: [{ name: "shell", args: { command: "sleep 600" } }] }] }, { hands: new Stuck() });
+  await conv.send(bots[0], "roda isso");
+  await sleep(50);
+  assert.ok(conv.isBusy(id.a));
+  conv.stop(id.a);
+  await sleep(10);
+  assert.ok(!conv.isBusy(id.a));
 });
