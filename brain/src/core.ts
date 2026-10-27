@@ -701,6 +701,19 @@ for (const method of ["routines.update", "routines.delete", "routines.runNow"]) 
 {
   const localList = methods["bots.list"];
   methods["bots.list"] = async (params) => [...((await localList(params)) as any[]), ...(await cloud.bots())];
+  // All routines (no bot named): this Mac's, then the hosted bots' from the cloud.
+  const routinesList = methods["routines.list"];
+  methods["routines.list"] = async (params: any) => {
+    const here = (await routinesList(params)) as any[];
+    if (params?.botId || !cloud.connected || !cloud.hostedCount()) return here;
+    try {
+      const there = (await cloud.call("routines.list")) as any[];
+      return [...here, ...there.filter((r) => cloud.isHosted(r.botId))];
+    } catch (err) {
+      log("cloud routines unavailable:", err instanceof Error ? err.message : err);
+      return here;
+    }
+  };
   const localDelete = methods["bots.delete"];
   methods["bots.delete"] = async (params: any) => {
     if (!cloud.isHosted(params?.id)) return localDelete(params);
