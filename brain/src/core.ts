@@ -413,8 +413,9 @@ export const methods: Record<string, Handler> = {
     emit("memory", { botId });
     return m;
   },
-  "memory.edit": ({ id, botId, ...patch }) => {
-    const m = memory.store.edit(id, patch);
+  "memory.edit": ({ id, botId, scope, ...patch }) => {
+    if (scope) memory.store.setScope(id, scope === "team" ? null : botId);
+    const m = Object.keys(patch).length ? memory.store.edit(id, patch) : memory.store.get(id);
     emit("memory", { botId });
     return m;
   },

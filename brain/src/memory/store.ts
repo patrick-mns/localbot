@@ -84,6 +84,34 @@ export class MemoryStore {
         covers_until TEXT NOT NULL
       );
     `);
+    this.migrate();
+  }
+
+  /**
+   * Version 1: what a bot learned after a task used to be filed under the
+   * team, so one bot's projects showed up for every bot. Each such memory goes
+   * back to the bot that learned it: the one whose episode was written in the
+   * same pass (within seconds). Unmatched or ambiguous ones stay with the team.
+   */
+  private migrate() {
+    const { user_version: version } = this.db.prepare("PRAGMA user_version").get() as { user_version: number };
+    if (version >= 1) return;
+    const learners = this.db.prepare(
+      `SELECT DISTINCT bot_id FROM memories WHERE kind = 'episode' AND bot_id IS NOT NULL
+       AND abs(julianday(created_at) - julianday(?)) * 86400 < 5`,
+    );
+    const move = this.db.prepare(`UPDATE memories SET bot_id = ? WHERE id = ?`);
+    this.db.exec("BEGIN");
+    try {
+      for (const row of this.db.prepare(`SELECT id, created_at FROM memories WHERE bot_id IS NULL AND source = 'learned'`).all() as any[]) {
+        const bots = learners.all(row.created_at) as { bot_id: string }[];
+        if (bots.length === 1) move.run(bots[0].bot_id, row.id);
+      }
+      this.db.exec("PRAGMA user_version = 1; COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   add(input: { botId: string | null; kind: MemoryKind; text: string; topic?: string | null; source: MemorySource; importance?: number }): Memory {
@@ -133,6 +161,16 @@ export class MemoryStore {
       patch.topic === undefined ? m.topic : patch.topic?.trim() || null,
       clamp(patch.importance ?? m.importance), new Date().toISOString(), id,
     );
+    return this.get(id)!;
+  }
+
+  /** Shares a memory with every bot (null) or keeps it to one. */
+  setScope(id: string, botId: string | null) {
+    const m = this.get(id);
+    if (!m) throw new Error(`No memory ${id}`);
+    if (m.botId === botId) return m;
+    if (m.kind === "core" && this.core(botId).length >= MAX_CORE) throw new Error(`Core memory is full (${MAX_CORE})`);
+    this.db.prepare(`UPDATE memories SET bot_id = ?, updated_at = ? WHERE id = ?`).run(botId, new Date().toISOString(), id);
     return this.get(id)!;
   }
 
