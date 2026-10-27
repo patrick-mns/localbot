@@ -76,3 +76,64 @@ test("store: reset erases everything", () => {
   assert.equal(s.search("b1", "esquecer").length, 0);
   assert.equal(s.chatSummary("b1"), undefined);
 });
+
+test("consolidation keeps what a bot learned to itself, even when the model says team", async () => {
+  const other = { id: "b-other", name: "Outro" } as Bot;
+  const svc = new MemoryService(async () =>
+    '{"episode":"Publicou o vídeo do canal infantil","ops":[{"op":"add","kind":"procedure","topic":"YouTube Studio","text":"Marcar Feito para crianças no canal Turma da Clareira","scope":"team"}]}', () => {});
+  await svc.consolidate(bot, { request: "publica o vídeo", steps: [], reply: "Publicado", startedAt: new Date().toISOString() });
+  const learned = svc.store.list(bot.id).find((m) => m.kind === "procedure")!;
+  assert.equal(learned.botId, bot.id);
+  assert.equal(svc.store.search(other.id, "canal turma clareira").length, 0);
+  assert.doesNotMatch(svc.context(other, "canal turma clareira"), /Clareira/);
+});
+
+test("consolidation can't rewrite the team's or another bot's memories", async () => {
+  const svc = new MemoryService(async () => "", () => {});
+  const team = svc.store.add({ botId: null, kind: "fact", text: "A empresa usa Notion para projetos", source: "user" });
+  const theirs = svc.store.add({ botId: "b-other", kind: "fact", text: "Projeto Atlas entrega em março", source: "bot" });
+  const ask = async () => JSON.stringify({ episode: null, ops: [
+    { op: "update", id: team.id, text: "A empresa usa Linear para projetos" },
+    { op: "forget", id: theirs.id },
+  ] });
+  await new MemoryService(ask, () => {}).consolidate(bot, { request: "x", steps: [], reply: "y", startedAt: new Date().toISOString() });
+  assert.equal(svc.store.get(team.id)?.validTo, null);
+  assert.equal(svc.store.get(theirs.id)?.validTo, null);
+});
+
+test("store: a memory can be shared with the team or kept to one bot", () => {
+  const s = new MemoryStore(":memory:");
+  const m = s.add({ botId: "b1", kind: "fact", text: "O usuário fala português", source: "bot" });
+  s.setScope(m.id, null);
+  assert.equal(s.search("b2", "português").length, 1);
+  s.setScope(m.id, "b1");
+  assert.equal(s.search("b2", "português").length, 0);
+});
+
+test("store: memories learned under the team before go back to the bot that learned them", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const file = join(mkdtempSync(join(tmpdir(), "mem-")), "memory.db");
+  new MemoryStore(file);
+  const db = new DatabaseSync(file);
+  const row = db.prepare(`INSERT INTO memories (id, bot_id, kind, text, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  const t1 = "2026-10-20T10:00:00.100Z", t2 = "2026-10-21T10:00:00.100Z", t3 = "2026-10-22T10:00:00.100Z";
+  row.run("ep-a", "alice", "episode", "Publicou o vídeo", "learned", "2026-10-20T10:00:00.050Z", t1);
+  row.run("m-a", null, "procedure", "Canal infantil: marcar Feito para crianças", "learned", t1, t1);
+  // Two bots finished at the same moment: can't tell, so it stays shared.
+  row.run("ep-b", "bob", "episode", "Fez a música", "learned", t2, t2);
+  row.run("ep-c", "carol", "episode", "Fez o clipe", "learned", t2, t2);
+  row.run("m-b", null, "fact", "Rotina de música às 9h", "learned", t2, t2);
+  // Saved on purpose (by the user or with scope team): untouched.
+  row.run("m-c", null, "core", "O usuário se chama Patrick", "user", t3, t3);
+  db.exec("PRAGMA user_version = 0");
+  db.close();
+
+  const s = new MemoryStore(file);
+  assert.equal(s.get("m-a")?.botId, "alice");
+  assert.equal(s.get("m-b")?.botId, null);
+  assert.equal(s.get("m-c")?.botId, null);
+  assert.equal(s.search("bob", "canal infantil").length, 0);
+});
