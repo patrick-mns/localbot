@@ -700,6 +700,19 @@ final class Brain: ObservableObject {
         await refreshComputers()
     }
 
+    /// Freezes the device as it is; Start (or a bot that needs it) resumes it.
+    func suspend(computer id: String) async {
+        busy.insert(id)
+        defer { busy.remove(id) }
+        await perform("computers.suspend", ["id": id])
+        await refreshComputers()
+    }
+
+    /// The user is using the device, so the brain doesn't suspend it for being idle.
+    func touchDevice(_ id: String) async {
+        _ = try? await call("computers.touch", ["id": id])
+    }
+
     // MARK: Bots
 
     func refreshBots() async {

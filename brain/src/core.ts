@@ -10,6 +10,7 @@ import { AppleProvider } from "./computers/apple.ts";
 import { LumeProvider } from "./computers/lume.ts";
 import { RailwayProvider } from "./computers/railway.ts";
 import { RemoteProvider } from "./computers/remote.ts";
+import { IdleSuspend } from "./computers/idle.ts";
 import { Routines, type Routine, type RunOutcome } from "./routines/routines.ts";
 import { Wakeups } from "./routines/wakeups.ts";
 import { MemoryService } from "./memory/memory.ts";
@@ -112,12 +113,25 @@ async function labelDevice(id: string) {
   }
 }
 
+/** Resumes a suspended device (a bot needs it); it picks up where it was. */
+async function wake(id: string) {
+  const p = computerProvider(id);
+  if (!p.resume) return;
+  const device = (await p.list()).find((c) => c.id === id);
+  if (device?.state !== "suspended") return;
+  await p.resume(id);
+  idle.touch(id);
+  log(`resumed ${id}`);
+  emit("computers", null);
+}
+
 /** A bot works on its own computer first, then on any computer it was granted. */
 const conversations = new Conversations(emit, async (bot) => {
   const view = bots.list().find((b) => b.id === bot.id);
   const accesses = [...(view?.computers ?? [])].sort((a, b) => (a.role === "owner" ? -1 : b.role === "owner" ? 1 : 0));
   for (const access of accesses) {
     const p = computerProvider(access.computerId);
+    await wake(access.computerId).catch((err) => log("resume failed:", err instanceof Error ? err.message : String(err)));
     const hands = await p.hands?.(access.computerId, `bot-${bot.id.slice(0, 8)}`);
     if (!hands) continue;
     const computer = (await p.list()).find((c) => c.id === access.computerId);
@@ -125,6 +139,20 @@ const conversations = new Conversations(emit, async (bot) => {
   }
   return null;
 }, () => bots.list());
+
+/** Devices nobody used for a few minutes are suspended (see idle.ts). */
+const idle = new IdleSuspend(
+  async () => {
+    const usable = await Promise.all(computerProviders.map(async (p) => (p.suspend && (await p.available()) ? p : null)));
+    return (await Promise.all(usable.filter((p): p is ComputerProvider => !!p).map((p) => p.list()))).flat();
+  },
+  (id) => bots.botsOn(id).some((botId) => conversations.isBusy(botId)),
+  async (id) => {
+    await computerProvider(id).suspend!(id);
+    log(`suspended ${id} (idle)`);
+    emit("computers", null);
+  },
+);
 
 const botsChanged = () => emit("bots", null);
 
@@ -349,10 +377,27 @@ export const methods: Record<string, Handler> = {
   "computers.start": async ({ id }) => {
     const p = computerProvider(id);
     if (!p.start) throw new Error(`${p.name} devices are started by the app`);
+    if ((await p.list()).find((c) => c.id === id)?.state === "suspended") return methods["computers.resume"]({ id });
     await p.start(id);
     emit("computers", null);
     void labelDevice(id);
   },
+  /** Freezes the device as it is (apps, windows, memory) until it resumes. */
+  "computers.suspend": async ({ id }) => {
+    const p = computerProvider(id);
+    if (!p.suspend) throw new Error(`${p.name} devices can’t be suspended`);
+    await p.suspend(id);
+    emit("computers", null);
+  },
+  "computers.resume": async ({ id }) => {
+    const p = computerProvider(id);
+    if (!p.resume) throw new Error(`${p.name} devices can’t be suspended`);
+    await p.resume(id);
+    idle.touch(id);
+    emit("computers", null);
+  },
+  /** The user is using the device (in control), so it isn't suspended for being idle. */
+  "computers.touch": ({ id }) => idle.touch(String(id)),
   "computers.stop": async ({ id }) => {
     const p = computerProvider(id);
     if (!p.stop) throw new Error(`${p.name} devices are stopped by the app`);
@@ -759,6 +804,7 @@ export const ready = Promise.all([initProviders(), railway.load(), remoteDevices
   .then(() => {
     routines.start();
     wakeups.start();
+    idle.start();
   });
 
 /** Runs one method once the brain is ready. */

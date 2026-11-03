@@ -12,7 +12,7 @@ const LABEL = "localbot.device";
 
 interface RuntimeDevice {
   id: string;
-  state: "running" | "stopped";
+  state: "running" | "suspended" | "stopped";
   ip: string;
   labels: Record<string, string>;
   cpus: number;
@@ -119,6 +119,14 @@ export class AppleProvider implements ComputerProvider {
 
   async stop(id: string) {
     await this.runtime.call("stop", { id: this.device(id) });
+  }
+
+  async suspend(id: string) {
+    await this.runtime.call("pause", { id: this.device(id) });
+  }
+
+  async resume(id: string) {
+    await this.runtime.call("resume", { id: this.device(id) });
   }
 
   async hands(id: string, session: string) {

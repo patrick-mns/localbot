@@ -153,7 +153,10 @@ struct VNCStage: View {
     @State private var controlling = false
 
     private var running: Bool { computer.state == "running" }
+    private var suspended: Bool { computer.state == "suspended" }
     private var busy: Bool { brain.busy.contains(computer.id) }
+    /// Local Linux devices can be suspended; the others only shut down.
+    private var canSuspend: Bool { computer.provider == "docker" || computer.provider == "apple" }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -170,19 +173,40 @@ struct VNCStage: View {
                         controlling.toggle()
                     }
                 }
-                PillButton(title: running ? "Shut down" : "Start",
-                           systemImage: running ? "power" : "play.fill", prominent: !running) {
-                    controlling = false
-                    Task { await brain.setPower(!running, computer: computer.id) }
+                if running && canSuspend {
+                    PillButton(title: "Suspend", systemImage: "moon") {
+                        controlling = false
+                        Task { await brain.suspend(computer: computer.id) }
+                    }
+                    .disabled(busy)
+                } else {
+                    PillButton(title: running ? "Shut down" : "Start",
+                               systemImage: running || suspended ? "power" : "play.fill", prominent: !running) {
+                        controlling = false
+                        Task { await brain.setPower(!running, computer: computer.id) }
+                    }
+                    .disabled(busy)
                 }
-                .disabled(busy)
-                DeviceMenu(computer: computer)
+                DeviceMenu(computer: computer, shutDown: (running && canSuspend) || suspended ? {
+                    controlling = false
+                    Task { await brain.setPower(false, computer: computer.id) }
+                } : nil)
             }
             Screen(highlighted: controlling) {
                 if running, let url = computer.display.url {
                     VNCScreen(url: url, password: computer.display.password, controlling: controlling)
                         // Watching shows only the bot's cursor; Take control brings the device's back.
-                        .task(id: controlling) { await brain.setDevicePointer(computer.id, hidden: !controlling) }
+                        .task(id: controlling) {
+                            await brain.setDevicePointer(computer.id, hidden: !controlling)
+                            // In control counts as using it: no suspending for being idle.
+                            while controlling && !Task.isCancelled {
+                                await brain.touchDevice(computer.id)
+                                try? await Task.sleep(for: .seconds(60))
+                            }
+                        }
+                } else if suspended {
+                    Placeholder(icon: "moon", text: busy ? "Resuming device…" : "Device is suspended",
+                                detail: busy ? nil : "Everything is as it was left. Start it, or message a bot that uses it.")
                 } else {
                     Placeholder(icon: "power", text: busy ? "Starting device…" : "Device is off",
                                 detail: busy ? nil : "Start it to see the screen and let bots work.")
@@ -346,6 +370,8 @@ struct DeviceMenu: View {
     let computer: Brain.Computer
     /// Why removing isn't possible right now (e.g. a running VM), or nil.
     var removeBlocked: String?
+    /// Shown when the header has Suspend instead of Shut down.
+    var shutDown: (() -> Void)?
 
     var body: some View {
         Menu {
@@ -353,6 +379,9 @@ struct DeviceMenu: View {
             Button("Add bots") { model.sheet = .addBots(computer.id) }
             if computer.provider == "railway" || computer.provider == "remote" {
                 Button("Share device…") { model.sheet = .shareDevice(computer.id) }
+            }
+            if let shutDown {
+                Button("Shut down", action: shutDown)
             }
             Divider()
             if let removeBlocked {

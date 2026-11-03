@@ -200,6 +200,7 @@ func stateLabel(_ state: String) -> String {
     case "stopped": return "Off"
     case "starting": return "Starting…"
     case "stopping": return "Shutting down…"
+    case "suspended": return "Suspended"
     case "creating": return "Being created…"
     default: return "Error"
     }
@@ -210,6 +211,7 @@ func stateColor(_ state: String) -> Color {
     case "running": return Theme.live
     case "starting", "stopping", "creating": return Theme.warn
     case "stopped": return Theme.tertiary
+    case "suspended": return Theme.secondary
     default: return Theme.danger
     }
 }
