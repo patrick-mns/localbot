@@ -21,6 +21,8 @@ const LEGACY = "localbot-computer";
 interface Container {
   name: string;
   running: boolean;
+  /** Frozen with `docker pause`: everything in it kept, using no CPU. */
+  paused: boolean;
   label: string;
   port: number;
 }
@@ -49,7 +51,7 @@ export class DockerProvider implements ComputerProvider {
       name: c.label,
       provider: this.name,
       os: "linux",
-      state: c.running ? "running" : "stopped",
+      state: c.running ? "running" : c.paused ? "suspended" : "stopped",
       display: { kind: "vnc", url: `http://127.0.0.1:${c.port}/vnc_lite.html`, password: this.password() },
     }));
   }
@@ -150,7 +152,18 @@ export class DockerProvider implements ComputerProvider {
   }
 
   async stop(id: string) {
-    await run("docker", ["stop", this.container(id)]);
+    const name = this.container(id);
+    // A paused container has to be thawed before it can shut down cleanly.
+    await run("docker", ["unpause", name]).catch(() => {});
+    await run("docker", ["stop", name]);
+  }
+
+  async suspend(id: string) {
+    await run("docker", ["pause", this.container(id)]);
+  }
+
+  async resume(id: string) {
+    await run("docker", ["unpause", this.container(id)]);
   }
 
   async hands(id: string, session: string) {
@@ -177,6 +190,7 @@ export class DockerProvider implements ComputerProvider {
     return [...legacy, ...labeled].map((c: any) => ({
       name: c.Names,
       running: c.State === "running",
+      paused: c.State === "paused",
       label: labelOf(c.Labels) ?? (c.Names === LEGACY ? "Linux" : c.Names),
       port: Number(/127\.0\.0\.1:(\d+)->6901/.exec(c.Ports)?.[1] ?? 6901),
     }));

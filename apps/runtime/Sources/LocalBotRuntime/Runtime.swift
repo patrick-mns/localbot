@@ -38,6 +38,8 @@ actor Runtime {
     private let managerLock = AsyncLock()
     private var devices: [String: Device] = [:]
     private var running: [String: Running] = [:]
+    /** Running devices whose VM is paused: memory kept, no CPU used. */
+    private var paused: Set<String> = []
     /// Commands started with `detach` (e.g. Cua Driver's daemon), until they exit.
     private var detached: [String: LinuxProcess] = [:]
     /// Starts in progress, so two callers don't boot the same device twice.
@@ -76,6 +78,12 @@ actor Runtime {
             return view(try device(id))
         case "stop":
             try await stop(try string(p, "id"))
+            return true
+        case "pause":
+            try await pause(try string(p, "id"))
+            return true
+        case "resume":
+            try await resume(try string(p, "id"))
             return true
         case "rm":
             try await remove(try string(p, "id"))
@@ -188,6 +196,7 @@ actor Runtime {
     private func exited(_ id: String, _ container: LinuxContainer) async {
         guard running[id]?.container === container else { return }
         running[id] = nil
+        paused.remove(id)
         await release(id)
     }
 
@@ -210,7 +219,23 @@ actor Runtime {
         }
     }
 
+    /// Freezes the device's VM as it is; `resume` carries on from there.
+    private func pause(_ id: String) async throws {
+        guard let r = running[id] else { throw RuntimeError("\(id) is not running") }
+        guard !paused.contains(id) else { return }
+        try await r.container.withVirtualMachineInstance { try await $0.pause() }
+        paused.insert(id)
+    }
+
+    private func resume(_ id: String) async throws {
+        guard let r = running[id], paused.contains(id) else { return }
+        try await r.container.withVirtualMachineInstance { try await $0.resume() }
+        paused.remove(id)
+    }
+
     private func stop(_ id: String) async throws {
+        // A paused VM can't run the shutdown; thaw it first.
+        try? await resume(id)
         guard let r = running.removeValue(forKey: id) else { return }
         for (key, process) in detached where key.hasPrefix("\(id)/") {
             detached[key] = nil
@@ -257,6 +282,7 @@ actor Runtime {
         guard let args = p["args"] as? [String], !args.isEmpty else { throw RuntimeError("exec needs args") }
         let dev = try device(id)
         guard let r = running[id] else { throw RuntimeError("\(id) is not running") }
+        guard !paused.contains(id) else { throw RuntimeError("\(id) is suspended") }
         let user = p["user"] as? String ?? "root"
         let env = Self.merge(Self.merge(dev.imageEnv ?? [], dev.env), p["env"] as? [String] ?? [])
         let detach = p["detach"] as? Bool ?? false
@@ -312,7 +338,7 @@ actor Runtime {
             "id": dev.id,
             "image": dev.image,
             "labels": dev.labels,
-            "state": running[dev.id] != nil ? "running" : "stopped",
+            "state": paused.contains(dev.id) ? "suspended" : running[dev.id] != nil ? "running" : "stopped",
             "ip": running[dev.id]?.ip ?? "",
             "cpus": dev.cpus,
             "memoryMiB": dev.memoryMiB,

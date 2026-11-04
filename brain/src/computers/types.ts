@@ -12,7 +12,8 @@ import type { Hands } from "../hands/types.ts";
  * Displaying the screen is the shell's job (VNC in a web view, or a native
  * VZVirtualMachineView on macOS); `display` tells the shell how to attach.
  */
-export type ComputerState = "creating" | "stopped" | "starting" | "running" | "stopping" | "error";
+/** "suspended": frozen as it was (apps, windows, memory); resuming picks up right there. */
+export type ComputerState = "creating" | "stopped" | "starting" | "running" | "suspended" | "stopping" | "error";
 
 export interface Computer {
   id: string;
@@ -37,6 +38,9 @@ export interface ComputerProvider {
   /** Providers whose computers the shell boots itself (native-vz) leave these out. */
   start?(id: string): Promise<void>;
   stop?(id: string): Promise<void>;
+  /** Freezes a running computer without losing anything in it; `resume` thaws it. */
+  suspend?(id: string): Promise<void>;
+  resume?(id: string): Promise<void>;
   /**
    * Creates a new device and returns its id (may keep provisioning in the
    * background). `options` carries the kind's extra fields (see computers.kinds).
