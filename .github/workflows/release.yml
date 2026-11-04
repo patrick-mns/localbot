@@ -15,8 +15,8 @@ jobs:
     # macOS 26 / Xcode 26: the device runtime needs its SDK.
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -28,7 +28,7 @@ jobs:
         run: |
           [ "v$(cat VERSION)" = "${GITHUB_REF_NAME}" ] || { echo "VERSION is $(cat VERSION), tag is ${GITHUB_REF_NAME}"; exit 1; }
       # The kernel the device VMs boot comes out of a 660 MB Kata package.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .build-cache/vmlinux-*
           key: device-kernel-kata-3.32.0
