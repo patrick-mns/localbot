@@ -739,6 +739,21 @@ final class Brain: ObservableObject {
         var mcpServers: [String] = []
     }
 
+    /// A ready-made bot in the Library; it only fills in the new-bot form.
+    struct LibraryBot: Decodable, Identifiable {
+        let id: String
+        let name: String
+        let role: String
+        let summary: String
+        let instructions: String
+        let avatarSeed: String
+        let face: Face
+    }
+
+    func libraryBots() async -> [LibraryBot] {
+        (try? await request("library.list")) ?? []
+    }
+
     func createBot(_ d: BotDraft) async -> Bot? {
         var params: [String: Any] = ["name": d.name, "role": d.role, "instructions": d.instructions,
                                      "provider": d.provider, "model": d.model, "avatarSeed": d.avatarSeed]

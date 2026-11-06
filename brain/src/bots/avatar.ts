@@ -191,6 +191,12 @@ export function renderAvatar(spec: AvatarSpec): string {
 /** SVG for a stored avatar string (catalog spec or legacy seed). */
 export const avatarSVG = (value: string) => renderAvatar(parseAvatar(value));
 
+/** Face parts plus colors, so shells can draw (and animate) the face natively. */
+export function faceOf(value: string) {
+  const spec = parseAvatar(value);
+  return { ...spec, fill: COLORS[spec.color].fill, deep: COLORS[spec.color].deep };
+}
+
 /**
  * The catalog for a picker: every option of every part, each rendered on top
  * of the current face so the user sees exactly what they'd get.

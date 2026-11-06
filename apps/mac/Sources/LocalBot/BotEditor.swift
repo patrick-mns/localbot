@@ -109,7 +109,14 @@ struct BotEditor: View {
             if let id = model.newBotDevice { draft.computerId = id; model.newBotDevice = nil }
             else if case .computer(let id) = model.selection { draft.computerId = id }
             else { draft.computerId = brain.computers.first { $0.os == "linux" }?.id }
-            if let random = await brain.randomAvatar() { draft.avatarSeed = random }
+            if let entry = model.newBotTemplate {
+                model.newBotTemplate = nil
+                draft.name = entry.name
+                draft.role = entry.role
+                draft.instructions = entry.instructions
+                draft.avatarSeed = entry.avatarSeed
+                face = entry.face
+            } else if let random = await brain.randomAvatar() { draft.avatarSeed = random }
             avatar = await brain.previewAvatar(seed: draft.avatarSeed)
         }
     }

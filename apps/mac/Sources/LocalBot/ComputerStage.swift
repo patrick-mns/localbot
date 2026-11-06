@@ -53,7 +53,7 @@ struct StageHeader<Actions: View>: View {
         HStack(spacing: 10) {
             if !model.showSidebar {
                 PanelToggle(side: .leading)
-                ToolbarButton(systemImage: "plus", help: "New bot") { model.sheet = .newBot }
+                ToolbarButton(systemImage: "plus", help: "New bot") { model.sheet = .library }
             }
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
@@ -121,7 +121,7 @@ struct ColumnLeadingChrome: View {
     var body: some View {
         if !model.showComputer && !model.showSidebar {
             PanelToggle(side: .leading)
-            ToolbarButton(systemImage: "plus", help: "New bot") { model.sheet = .newBot }
+            ToolbarButton(systemImage: "plus", help: "New bot") { model.sheet = .library }
         }
     }
 }

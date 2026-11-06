@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { avatarOptions, avatarSVG, randomAvatar } from "./bots/avatar.ts";
 import { Bots } from "./bots/bots.ts";
+import { libraryBots } from "./bots/library.ts";
 import { Conversations } from "./chat/conversations.ts";
 import { addProvider, exportProvider, findProvider, initProviders, provider, providerStatus, removeProvider, resetProviders, setDefault, settings, testProvider, updateProvider } from "./chat/providers.ts";
 import { DockerProvider } from "./computers/docker.ts";
@@ -421,6 +422,7 @@ export const methods: Record<string, Handler> = {
     botsChanged();
     return bot;
   },
+  "library.list": () => libraryBots(),
   "bots.previewAvatar": ({ seed }) => avatarSVG(String(seed)),
   /** Every catalog option rendered on top of the given face (for the picker). */
   "bots.avatarOptions": ({ value }) => avatarOptions(String(value || randomAvatar())),

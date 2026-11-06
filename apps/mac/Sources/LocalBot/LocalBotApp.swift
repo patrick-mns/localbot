@@ -74,6 +74,7 @@ enum Selection: Hashable {
 }
 
 enum Sheet: Identifiable {
+    case library
     case newBot
     case editBot(String)
     case settings
@@ -90,6 +91,7 @@ enum Sheet: Identifiable {
         case .shareDevice(let id): return "share-\(id)"
         case .routine(let bot, let routine): return "routine-\(bot)-\(routine ?? "new")"
         case .onboarding: return "onboarding"
+        case .library: return "library"
         case .newBot: return "new"
         case .editBot(let id): return "edit-\(id)"
         case .settings: return "settings"
@@ -123,6 +125,8 @@ final class AppModel: ObservableObject {
     @Published var clearingChat: Brain.Bot?
     /// Device preselected when "New bot" is opened from a device.
     var newBotDevice: String?
+    /// Library entry that fills in the form when "New bot" opens.
+    var newBotTemplate: Brain.LibraryBot?
     /// macOS VMs are booted in-process; one host per Lume bundle.
     private var vmHosts: [String: VMHost] = [:]
 
@@ -209,6 +213,7 @@ struct MainView: View {
         .onReceive(brain.$computers) { _ in fixSelection() }
         .sheet(item: $model.sheet) { sheet in
             switch sheet {
+            case .library: LibrarySheet(model: model, brain: brain)
             case .newBot: BotEditor(model: model, brain: brain, botID: nil)
             case .editBot(let id): BotEditor(model: model, brain: brain, botID: id)
             case .settings: SettingsSheet(brain: brain) { model.sheet = .onboarding }

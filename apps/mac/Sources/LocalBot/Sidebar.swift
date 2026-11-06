@@ -19,9 +19,9 @@ struct Sidebar: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    section("Bots", action: ("plus", "New bot", { model.sheet = .newBot })) {
+                    section("Bots", action: ("plus", "New bot", { model.sheet = .library })) {
                         if brain.bots.isEmpty {
-                            Button { model.sheet = .newBot } label: {
+                            Button { model.sheet = .library } label: {
                                 HStack(spacing: 10) {
                                     Image(systemName: "plus").font(.system(size: 11, weight: .semibold))
                                         .frame(width: 28, height: 28)
