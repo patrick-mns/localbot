@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Collection } from "../store.ts";
-import { COLORS, avatarSVG, parseAvatar, randomAvatar } from "./avatar.ts";
+import { avatarSVG, faceOf, randomAvatar } from "./avatar.ts";
 
 export interface Bot {
   id: string;
@@ -32,8 +32,7 @@ export interface Access {
   createdAt: string;
 }
 
-/** Face parts plus colors, so shells can draw (and animate) the face natively. */
-export type Face = ReturnType<typeof parseAvatar> & { fill: string; deep: string };
+export type Face = ReturnType<typeof faceOf>;
 export type BotView = Bot & { avatar: string; face: Face; computers: Access[] };
 
 export class Bots {
@@ -128,11 +127,10 @@ export class Bots {
   }
 
   private view(bot: Bot): BotView {
-    const spec = parseAvatar(bot.avatarSeed);
     return {
       ...bot,
       avatar: avatarSVG(bot.avatarSeed),
-      face: { ...spec, fill: COLORS[spec.color].fill, deep: COLORS[spec.color].deep },
+      face: faceOf(bot.avatarSeed),
       computers: this.live().filter((a) => a.botId === bot.id),
     };
   }

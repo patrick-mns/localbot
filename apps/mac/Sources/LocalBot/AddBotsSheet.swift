@@ -98,6 +98,7 @@ struct AddBotsSheet: View {
 }
 
 struct NewBotRow: View {
+    var subtitle = "It will own this device"
     let action: () -> Void
     @State private var hovering = false
 
@@ -109,7 +110,7 @@ struct NewBotRow: View {
                     .background(RoundedRectangle(cornerRadius: 9).stroke(Theme.border, style: .init(lineWidth: 1, dash: [3])))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Create a new bot").font(.system(size: 13, weight: .medium))
-                    Text("It will own this device").font(.system(size: 11)).foregroundStyle(Theme.tertiary)
+                    Text(subtitle).font(.system(size: 11)).foregroundStyle(Theme.tertiary)
                 }
                 Spacer()
             }
