@@ -488,7 +488,7 @@ export const methods: Record<string, Handler> = {
 
   // Wake-ups (set by the bots themselves)
   "wakeups.list": ({ botId }) => wakeups.list(botId),
-  "wakeups.cancel": ({ botId }) => wakeups.cancel(String(botId)),
+  "wakeups.cancel": ({ botId }) => conversations.cancelWakeup(String(botId)),
 
   // Chat
   "chat.history": ({ botId }) => conversations.history(botId),

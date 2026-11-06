@@ -5,7 +5,7 @@ import { FileStore, readDeviceFile, writeDeviceFile, type Attachment } from "./f
 import type { McpServers } from "../mcp/servers.ts";
 import { MessageStore } from "./messages.ts";
 import type { Routines } from "../routines/routines.ts";
-import { MAX_CHECKS, type Wakeup, type Wakeups } from "../routines/wakeups.ts";
+import { MAX_CHECKS, MAX_RECONNECTS, RECONNECT_MINUTES, type Reconnect, type Wakeup, type Wakeups } from "../routines/wakeups.ts";
 import { MEMORY_TOOLS, VERBATIM_MESSAGES, type MemoryService } from "../memory/memory.ts";
 import type { Hands } from "../hands/types.ts";
 import type { RunOutcome } from "../routines/routines.ts";
@@ -95,6 +95,8 @@ export class Conversations {
   private running = new Map<string, AbortController>();
   /** Messages sent while a bot works, waiting for its next step (oldest first). */
   private queued = new Map<string, Message[]>();
+  /** Bots waiting for the connection; calling one ends its wait with the tries so far. */
+  private waits = new Map<string, (attempt: number) => void>();
 
   private routines?: Routines;
   private wakeups?: Wakeups;
@@ -151,6 +153,7 @@ export class Conversations {
   reset() {
     this.queued.clear();
     for (const [, run] of this.running) run.abort();
+    this.waits.clear();
     this.messages.clear();
     this.files.clearAll();
   }
@@ -167,7 +170,15 @@ export class Conversations {
   /** Stops the bot: the current turn, and a wake-up it set for later. */
   stop(botId: string) {
     this.running.get(botId)?.abort();
+    this.waits.delete(botId);
     this.wakeups?.cancel(botId);
+  }
+
+  /** Cancel on the wake-up bar. Waiting for the connection, that's the same as Stop. */
+  cancelWakeup(botId: string) {
+    if (!this.waits.has(botId) && !this.wakeups?.forBot(botId)?.reconnect) return this.wakeups?.cancel(botId) ?? false;
+    this.stop(botId);
+    return true;
   }
 
   /**
@@ -331,6 +342,8 @@ export class Conversations {
       }
     }
 
+    // Connection failures in a row; the turn stays open while it waits them out.
+    let tries = 0;
     while (!signal.aborted) {
       // Messages the user sent meanwhile join here, before the next step.
       transcript.push(...(await this.takeQueued(bot, place)));
@@ -348,12 +361,27 @@ export class Conversations {
           },
         });
       } catch (err) {
+        const offline = isConnectionFailure(err);
+        if (!signal.aborted && offline && this.wakeups && tries < MAX_RECONNECTS) {
+          // A cut-off reply ran none of its tools; the step is asked again whole.
+          reply.text = "";
+          this.finish(reply);
+          tries = await this.waitForConnection(bot, signal, tries + 1);
+          if (place && !signal.aborted) await this.lookAgain(transcript, place.hands);
+          continue;
+        }
         if (!signal.aborted) {
-          reply.error = friendlyProviderError(err);
+          reply.error = offline && tries
+            ? `Couldn’t reach the AI provider after ${tries} tries, so I stopped. Check your connection.`
+            : friendlyProviderError(err);
           reply.detail = err instanceof Error ? err.message : String(err);
         }
         this.finish(reply);
         return signal.aborted ? { ok: false, error: "Stopped" } : { ok: false, error: reply.error };
+      }
+      if (tries) {
+        this.activity(bot, "The connection is back · continuing");
+        tries = 0;
       }
       this.finish(reply);
       if (reply.text.trim()) lastReply = reply.text.trim();
@@ -491,6 +519,7 @@ export class Conversations {
    * stop. Only work starts a full turn.
    */
   async wake(bot: Bot, w: Wakeup) {
+    if (w.reconnect) return this.checkConnection(bot, w.reconnect);
     if (this.running.has(bot.id)) return;
     const ago = Math.max(1, Math.round((Date.now() - new Date(w.createdAt).getTime()) / 60_000));
     const recent = this.history(bot.id)
@@ -517,7 +546,8 @@ export class Conversations {
     try {
       call = (await this.chatWith(bot).chat({ model: bot.model, messages, tools: WAKE_CHECK_TOOLS, maxTokens: WAKE_CHECK_TOKENS, onDelta: () => {} })).toolCalls[0];
     } catch (err) {
-      this.failure(bot, "Woke up but couldn’t check", err);
+      if (isConnectionFailure(err)) this.armReconnect(bot, 1, false, w);
+      else this.failure(bot, "Woke up but couldn’t check", err);
       return;
     }
     let a: any = {};
@@ -538,6 +568,76 @@ export class Conversations {
     // Work now: asked to, no clear answer, or too many looks in a row.
     if (this.running.has(bot.id)) return;
     this.start(bot, String(a.instructions || w.note), { wakeup: { note: w.note } });
+  }
+
+  /** Holds the turn until a wake-up finds the connection back, or Stop; returns the tries so far. */
+  private waitForConnection(bot: Bot, signal: AbortSignal, attempt: number) {
+    this.armReconnect(bot, attempt, true);
+    return new Promise<number>((resolve) => {
+      const wait = (n: number) => {
+        signal.removeEventListener("abort", stopped);
+        if (this.waits.get(bot.id) === wait) this.waits.delete(bot.id);
+        resolve(n);
+      };
+      const stopped = () => wait(attempt);
+      this.waits.set(bot.id, wait);
+      signal.addEventListener("abort", stopped, { once: true });
+    });
+  }
+
+  private armReconnect(bot: Bot, attempt: number, turn: boolean, replaced?: Wakeup) {
+    const current = this.wakeups!.forBot(bot.id);
+    const previous = replaced ?? (current?.reconnect ? current.reconnect.previous : current);
+    const next = this.wakeups!.set(bot.id, RECONNECT_MINUTES, `Waiting for the connection (try ${attempt} of ${MAX_RECONNECTS})`, 0, { attempt, turn, ...(previous ? { previous } : {}) });
+    if (attempt === 1) this.activity(bot, `Lost the connection · trying again at ${clock(next.at)}`);
+  }
+
+  /**
+   * A connection wake-up is due. Asking for the model list costs nothing, and
+   * any answer at all, even an error, means the network is back. A turn that
+   * is still waiting goes on; after a restart there is none, so a new one
+   * starts from what the chat kept.
+   */
+  private async checkConnection(bot: Bot, { attempt, turn, previous }: Reconnect) {
+    const live = this.waits.get(bot.id);
+    if (!live && this.running.has(bot.id)) {
+      if (previous) this.wakeups!.importForBot(bot.id, previous);
+      return;
+    }
+    const wait = live ?? (() => {});
+    this.waits.set(bot.id, wait);
+    let offline = false;
+    try {
+      await this.chatWith(bot).models(true);
+    } catch (err) {
+      offline = isConnectionFailure(err);
+    }
+    if (this.waits.get(bot.id) !== wait) return; // Stopped during the check.
+    if (offline && attempt < MAX_RECONNECTS) {
+      this.armReconnect(bot, attempt + 1, turn, previous);
+      if (!live) this.waits.delete(bot.id);
+      return;
+    }
+    this.waits.delete(bot.id);
+    if (previous) this.wakeups!.importForBot(bot.id, previous);
+    if (live) return live(attempt);
+    if (offline) {
+      this.failure(bot, `Still no connection after ${attempt} tries, so I stopped`, new Error("The AI provider can’t be reached."));
+      return;
+    }
+    if (turn) this.start(bot, this.resumePrompt(bot), { wakeup: { note: "The connection came back" } });
+  }
+
+  /** For a turn lost while waiting: its tool results are gone, so it's told what was done. */
+  private resumePrompt(bot: Bot) {
+    const history = this.history(bot.id);
+    const prompt = history.map((m) => m.role).lastIndexOf("user");
+    const steps = history.slice(prompt + 1).filter((m) => m.role === "activity" && !m.error).slice(-20).map((m) => `- ${m.text}`);
+    return [
+      "The connection dropped while you were working, and the app restarted before it came back.",
+      steps.length && `Steps you had already done:\n${steps.join("\n")}`,
+      "Check the current state, then continue the task without redoing what's done.",
+    ].filter(Boolean).join("\n\n");
   }
 
   /** The current-state line about a wake-up the bot has set, if any. */
@@ -690,6 +790,15 @@ export class Conversations {
         { type: "image_url", image_url: { url: `data:image/png;base64,${shot.png}` } },
       ],
     };
+  }
+
+  /** After a wait the screen may have changed; a device that fails here shows up at the next action. */
+  private async lookAgain(transcript: ChatMessage[], hands: Hands) {
+    try {
+      const screen = await this.look(hands, "Screen now that the connection is back:");
+      dropOldScreens(transcript);
+      transcript.push(screen);
+    } catch {}
   }
 
   /** Copies files off the device and posts them in the chat as one message. */
@@ -920,6 +1029,7 @@ function friendlyDeviceError(raw: string): string {
 /** Plain-language reason for a model/provider failure. */
 function friendlyProviderError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
+  if (isConnectionFailure(err)) return "Couldn’t reach the AI provider. Check your connection.";
   if (/no api key|has no API key/i.test(raw)) return "This bot’s AI provider has no API key. Add one in Settings.";
   if (/\b401\b|unauthori[sz]ed|invalid api key/i.test(raw)) return "The AI provider rejected the API key. Check it in Settings.";
   if (/\b402\b|credits|insufficient/i.test(raw)) return "The AI provider account is out of credits.";
@@ -929,6 +1039,30 @@ function friendlyProviderError(err: unknown): string {
   if (/fetch failed|ENOTFOUND|ECONNREFUSED|network/i.test(raw)) return "Couldn’t reach the AI provider. Check your connection.";
   if (/\b5\d\d\b/.test(raw)) return "The AI provider had a problem. Try again.";
   return "The AI provider returned an error.";
+}
+
+const CONNECTION_CODES = new Set([
+  "ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "EHOSTUNREACH", "EHOSTDOWN", "ENETUNREACH", "ENETDOWN", "EPIPE",
+  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_SOCKET",
+]);
+
+/**
+ * The network failed, so asking again later can work. This goes by the error's
+ * shape, not by words in its text: a provider's answer (401, a refusal, "model
+ * not found") may well mention "connection" or "timeout", and retrying it is
+ * pointless. fetch wraps the real reason in `cause`: mid-stream it throws
+ * "terminated", and a bad certificate or URL is also "fetch failed".
+ */
+export function isConnectionFailure(err: unknown): boolean {
+  const chain: Error[] = [];
+  for (let e = err; e instanceof Error && chain.length < 5; e = e.cause) chain.push(e);
+  const codes = chain.map((e) => (e as { code?: unknown }).code).filter((c): c is string => typeof c === "string");
+  if (codes.length) return codes.some((c) => CONNECTION_CODES.has(c));
+  if (chain.some((e) => e.name === "TimeoutError")) return true;
+  if (chain.some((e) => /^(unknown scheme|bad port|invalid url)/i.test(e.message))) return false;
+  const message = chain[0]?.message ?? String(err);
+  return /^(fetch failed|terminated|socket hang up|other side closed|network error|(request |connection )?timed out)$/i.test(message) ||
+    /^((connect|getaddrinfo|read|write) )?(ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)/.test(message);
 }
 
 const stepVerb = (tool: string) =>

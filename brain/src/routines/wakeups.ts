@@ -17,12 +17,26 @@ export interface Wakeup {
   createdAt: string;
   /** Short looks in a row that went back to sleep (capped by MAX_CHECKS). */
   checks: number;
+  /** Set when the bot is waiting for the connection, not for its task. */
+  reconnect?: Reconnect;
+}
+
+export interface Reconnect {
+  /** Tries in a row so far (capped by MAX_RECONNECTS). */
+  attempt: number;
+  /** A turn was cut off; false when only a quick look failed. */
+  turn: boolean;
+  /** The wake-up this one replaced (one per bot); it comes back afterwards. */
+  previous?: Wakeup;
 }
 
 /** Sleeping again this many times in a row ends the chain. */
 export const MAX_CHECKS = 12;
 export const MIN_MINUTES = 1;
 export const MAX_MINUTES = 24 * 60;
+/** With no connection: look every 2 minutes, for about an hour. */
+export const RECONNECT_MINUTES = 2;
+export const MAX_RECONNECTS = 30;
 
 const TICK_MS = 15_000;
 
@@ -53,7 +67,7 @@ export class Wakeups {
     return this.items.where((w) => !botId || w.botId === botId);
   }
 
-  set(botId: string, minutes: number, note: string, checks = 0): Wakeup {
+  set(botId: string, minutes: number, note: string, checks = 0, reconnect?: Reconnect): Wakeup {
     const m = Number(minutes);
     if (!Number.isFinite(m) || m < MIN_MINUTES || m > MAX_MINUTES) {
       throw new Error(`Wake-ups are between ${MIN_MINUTES} minute and ${MAX_MINUTES / 60} hours away`);
@@ -68,6 +82,7 @@ export class Wakeups {
       note: text.slice(0, 500),
       createdAt: new Date().toISOString(),
       checks,
+      ...(reconnect ? { reconnect } : {}),
     };
     this.items.upsert(wakeup);
     this.changed(botId);
@@ -96,10 +111,13 @@ export class Wakeups {
     this.changed(botId);
   }
 
-  /** Fires what's due (a busy bot's wake-up waits for the next tick). */
+  /**
+   * Fires what's due (a busy bot's wake-up waits for the next tick, unless it's
+   * the bot's own turn waiting for the connection).
+   */
   async tick(now = new Date()) {
     for (const w of this.items.all()) {
-      if (new Date(w.at) > now || this.busy(w.botId)) continue;
+      if (new Date(w.at) > now || (this.busy(w.botId) && !w.reconnect)) continue;
       this.items.remove((x) => x.id === w.id);
       this.changed(w.botId);
       await this.fire(w).catch(() => {});
